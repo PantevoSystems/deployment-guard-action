@@ -1,5 +1,5 @@
 name: 'Deployment Guard'
-description: 'KI-gestützter Risk Score vor jedem Deployment. Analysiert Code-Änderungen und blockiert riskante Deployments automatisch.'
+description: 'Deterministic risk score before every deployment. Scores your diff, Kubernetes changes and pipeline findings, and blocks risky deployments automatically.'
 author: 'PantevoSystems'
 
 branding:
@@ -8,58 +8,58 @@ branding:
 
 inputs:
   api-key:
-    description: 'Deployment Guard API Key (aus pantevosystems.com/signup)'
+    description: 'Deployment Guard API key (from pantevosystems.com/signup)'
     required: true
   fail-on-blocked:
-    description: 'Pipeline bei BLOCKED Status fehlschlagen lassen'
+    description: 'Fail the pipeline when the status is BLOCKED'
     required: false
     default: 'true'
   incidents-last-7d:
-    description: 'Anzahl Incidents in den letzten 7 Tagen'
+    description: 'Number of production incidents in the last 7 days'
     required: false
     default: '0'
   incidents-last-30d:
-    description: 'Anzahl Incidents in den letzten 30 Tagen'
+    description: 'Number of production incidents in the last 30 days'
     required: false
     default: '0'
   trivy-critical-cves:
-    description: 'Anzahl CRITICAL CVEs aus Trivy'
+    description: 'Number of CRITICAL CVEs reported by Trivy'
     required: false
     default: '0'
   trivy-high-cves:
-    description: 'Anzahl HIGH CVEs aus Trivy'
+    description: 'Number of HIGH CVEs reported by Trivy'
     required: false
     default: '0'
   semgrep-findings:
-    description: 'Gesamtzahl Semgrep-Findings'
+    description: 'Total number of Semgrep findings'
     required: false
     default: '0'
   semgrep-high-severity:
-    description: 'Anzahl Semgrep HIGH-Severity Findings (Subset von semgrep-findings)'
+    description: 'Number of HIGH-severity Semgrep findings (subset of semgrep-findings)'
     required: false
     default: '0'
   checkov-failed-checks:
-    description: 'Gesamtzahl Checkov Failed Checks'
+    description: 'Total number of failed Checkov checks'
     required: false
     default: '0'
   checkov-critical-failures:
-    description: 'Anzahl Checkov CRITICAL Failures (Subset von checkov-failed-checks)'
+    description: 'Number of CRITICAL Checkov failures (subset of checkov-failed-checks)'
     required: false
     default: '0'
   diff-changed-paths:
-    description: 'Komma-separierte Liste der geänderten File-Pfade (wird auto-detektiert wenn leer)'
+    description: 'Comma-separated list of changed file paths (auto-detected when empty)'
     required: false
     default: ''
 
 outputs:
   score:
-    description: 'Risk Score (0-100)'
+    description: 'Risk score (0-100)'
   verdict:
     description: 'Verdict (LOW RISK / MEDIUM RISK / HIGH RISK / CRITICAL RISK)'
   status:
     description: 'Status (PASS / WARN / BLOCKED)'
   explanation:
-    description: 'KI-Erklärung des Scores'
+    description: 'Plain-language explanation of the score'
 
 runs:
   using: 'composite'

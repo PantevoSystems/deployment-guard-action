@@ -1,12 +1,12 @@
 # 🛡️ Deployment Guard Action
 
-Deterministischer Risk Score vor jedem Deployment. Analysiert Code-Änderungen automatisch und blockiert riskante Deployments. Nachvollziehbare Formel, keine Black Box.
+Deterministic risk score before every deployment. Analyses your code changes automatically and blocks risky deployments. A formula you can follow — not a black box.
 
-**Von [PantevoSystems](https://www.pantevosystems.com)**
+**By [PantevoSystems](https://www.pantevosystems.com)** · [Deutsch](README.de.md)
 
 ---
 
-## Schnellstart
+## Quick start
 
 ```yaml
 - uses: actions/checkout@v4
@@ -19,11 +19,11 @@ Deterministischer Risk Score vor jedem Deployment. Analysiert Code-Änderungen a
     api-key: ${{ secrets.GUARD_API_KEY }}
 ```
 
-> ⚠️ `fetch-depth: 2` ist erforderlich — ohne den vorherigen Commit kann kein Diff berechnet werden.
+> ⚠️ `fetch-depth: 2` is required — without the previous commit there is no diff to analyse.
 
 ---
 
-## Vollständiges Beispiel
+## Full example
 
 ```yaml
 name: Deploy
@@ -49,7 +49,7 @@ jobs:
           incidents-last-7d: '0'
           incidents-last-30d: '0'
 
-      - name: Score anzeigen
+      - name: Show score
         run: |
           echo "Score:   ${{ steps.guard.outputs.score }}"
           echo "Status:  ${{ steps.guard.outputs.status }}"
@@ -60,14 +60,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Deploy
-        run: echo "Dein Deploy-Schritt hier"
+        run: echo "Your deploy step here"
 ```
 
 ---
 
-## Mit Pipeline Security Stack (Team Plan)
+## With the Pipeline Security Stack (Team plan)
 
-Für vollständigen DevSecOps-Stack — Trivy + Semgrep + Checkov werden ausgeführt und Findings automatisch in den Risk Score gespeist:
+For a full DevSecOps stack — Trivy, Semgrep and Checkov run first, and their findings feed straight into the risk score:
 
 ```yaml
 jobs:
@@ -85,73 +85,75 @@ jobs:
       guard-api-key: ${{ secrets.GUARD_API_KEY }}
 ```
 
-Templates: [PantevoSystems/pipeline-security-templates](https://github.com/PantevoSystems/pipeline-security-templates) (MIT-Lizenz)
+Templates: [PantevoSystems/pipeline-security-templates](https://github.com/PantevoSystems/pipeline-security-templates) (MIT licence)
 
 ---
 
 ## Inputs
 
-| Input | Beschreibung | Pflicht | Standard |
+| Input | Description | Required | Default |
 |---|---|---|---|
-| `api-key` | Deployment Guard API Key | ✅ | — |
-| `fail-on-blocked` | Pipeline bei BLOCKED fehlschlagen lassen | ❌ | `true` |
-| `incidents-last-7d` | Produktionsvorfälle letzte 7 Tage (manuell angeben) | ❌ | `0` |
-| `incidents-last-30d` | Produktionsvorfälle letzte 30 Tage (manuell angeben) | ❌ | `0` |
-| `trivy-critical-cves` | Anzahl CRITICAL CVEs aus Trivy (CVSS ≥ 9.0) | ❌ | `0` |
-| `trivy-high-cves` | Anzahl HIGH CVEs aus Trivy (CVSS 7.0-8.9) | ❌ | `0` |
-| `semgrep-findings` | Gesamtanzahl Semgrep-Findings | ❌ | `0` |
-| `semgrep-high-severity` | HIGH-Severity Semgrep-Findings (level=error) | ❌ | `0` |
-| `checkov-failed-checks` | Fehlgeschlagene Checkov-Checks | ❌ | `0` |
-| `checkov-critical-failures` | CRITICAL Checkov-Failures | ❌ | `0` |
+| `api-key` | Deployment Guard API key | ✅ | — |
+| `fail-on-blocked` | Fail the pipeline on BLOCKED | ❌ | `true` |
+| `incidents-last-7d` | Production incidents in the last 7 days (pass manually) | ❌ | `0` |
+| `incidents-last-30d` | Production incidents in the last 30 days (pass manually) | ❌ | `0` |
+| `trivy-critical-cves` | CRITICAL CVEs from Trivy (CVSS ≥ 9.0) | ❌ | `0` |
+| `trivy-high-cves` | HIGH CVEs from Trivy (CVSS 7.0–8.9) | ❌ | `0` |
+| `semgrep-findings` | Total Semgrep findings | ❌ | `0` |
+| `semgrep-high-severity` | HIGH-severity Semgrep findings (level=error) | ❌ | `0` |
+| `checkov-failed-checks` | Failed Checkov checks | ❌ | `0` |
+| `checkov-critical-failures` | CRITICAL Checkov failures | ❌ | `0` |
 
 ---
 
 ## Outputs
 
-| Output | Beschreibung |
+| Output | Description |
 |---|---|
-| `score` | Risk Score (0–100) |
+| `score` | Risk score (0–100) |
 | `verdict` | LOW RISK / MEDIUM RISK / HIGH RISK / CRITICAL RISK |
 | `status` | PASS / WARN / BLOCKED |
-| `explanation` | Erklärung des Scores in verständlicher Sprache |
+| `explanation` | Plain-language explanation of the score |
 
 ---
 
-## Was wird automatisch erkannt?
+## What is detected automatically?
 
-Die Action erkennt folgende Faktoren automatisch aus dem Git-Diff:
+The action derives these factors from the git diff on its own:
 
-### Diff-Komplexität
-- Anzahl geänderter Zeilen (hinzugefügt + entfernt)
-- Anzahl geänderter Dateien
+### Diff complexity
+- Lines changed (added + removed)
+- Files changed
 
-### Kubernetes-Risiko
-Erkennt echte K8s-Manifeste anhand des `kind:` Feldes. Ausgeschlossen werden:
-- GitHub Actions Workflows (`.github/`)
+### Kubernetes risk
+Real K8s manifests are identified by their `kind:` field. Excluded:
+- GitHub Actions workflows (`.github/`)
 - `action.yml` / `action.yaml`
-- Helm Templates (`templates/`)
+- Helm templates (`templates/`)
 
-Erkannte Risiken:
-- Anzahl geänderter K8s-Manifeste
-- `replicas: 1` in einem Deployment → Single Replica Flag
-- Deployment vorhanden aber kein `PodDisruptionBudget` → Missing PDB Flag
+Detected risks:
+- Number of changed K8s manifests
+- `replicas: 1` in a Deployment → single replica flag
+- Deployment present but no `PodDisruptionBudget` → missing PDB flag
 
-### Helm-Parameter
-- `helm_values_changed` — YAML-Dateien mit `image:`, `tag:`, `replicaCount:` oder `resources:`
-- `helm_chart_bumped` — `Chart.yaml` oder `Chart.yml` geändert
+### Helm parameters
+- `helm_values_changed` — YAML files containing `image:`, `tag:`, `replicaCount:` or `resources:`
+- `helm_chart_bumped` — `Chart.yaml` or `Chart.yml` changed
 
-### Dependency-Risiko
-Erkennt Änderungen an:
+### Dependency changes
+Detects changes to:
 `package.json`, `requirements.txt`, `go.mod`, `pom.xml`, `Gemfile`, `Cargo.toml`, `yarn.lock`, `package-lock.json`
 
-### Major Version Bumps
-Erkennt Major-Upgrades automatisch in:
-- `package.json` — Hauptversionsnummern verglichen
-- `requirements.txt` — `==X.y.z` Versionsnummern verglichen
-- `go.mod` — `/vX` Module-Pfade verglichen
+> This factor measures **how much** your dependencies moved, not whether the new versions are secure. Known vulnerabilities are covered separately by the pipeline findings below.
 
-### Fehlerhistorie
-Wird **nicht** automatisch erkannt — muss manuell übergeben werden:
+### Major version bumps
+Detected automatically in:
+- `package.json` — major version numbers compared
+- `requirements.txt` — `==X.y.z` version numbers compared
+- `go.mod` — `/vX` module paths compared
+
+### Incident history
+**Not** detected automatically — pass it yourself:
 
 ```yaml
 - name: Deployment Guard
@@ -161,14 +163,15 @@ Wird **nicht** automatisch erkannt — muss manuell übergeben werden:
     incidents-last-7d: '2'
     incidents-last-30d: '5'
 ```
-### Pipeline-Findings (optional)
-Werden **nicht** automatisch erkannt — werden über die [Pipeline Security Templates](https://github.com/PantevoSystems/pipeline-security-templates) durchgereicht. Im Standalone-Setup einfach weglassen, dann sind alle Felder 0.
 
-Felder: `trivy-critical-cves`, `trivy-high-cves`, `semgrep-findings`, `semgrep-high-severity`, `checkov-failed-checks`, `checkov-critical-failures`
+### Pipeline findings (optional)
+**Not** detected automatically — they are passed through by the [Pipeline Security Templates](https://github.com/PantevoSystems/pipeline-security-templates). In a standalone setup just leave them out and every field stays at 0.
+
+Fields: `trivy-critical-cves`, `trivy-high-cves`, `semgrep-findings`, `semgrep-high-severity`, `checkov-failed-checks`, `checkov-critical-failures`
 
 ---
 
-## Score-Logik
+## How the score works
 
 | Score | Verdict | Status |
 |---|---|---|
@@ -177,67 +180,69 @@ Felder: `trivy-critical-cves`, `trivy-high-cves`, `semgrep-findings`, `semgrep-h
 | 75–84 | HIGH RISK | ❌ BLOCKED |
 | 85–100 | CRITICAL RISK | ❌ BLOCKED |
 
-### Gewichtung der Faktoren
+### Factor weighting
 
-Jeder Faktor wird für sich auf einer Skala von 0 bis 100 berechnet. Wie stark er in den Gesamtscore einfließt, hängt vom Kontext des Repositories ab:
+Every factor is scored on its own scale from 0 to 100. How much it counts towards the total depends on the context of your repository:
 
-| Modus | Diff | K8s | Dependencies | Fehlerhistorie | Findings |
+| Mode | Diff | K8s | Dependencies | Incidents | Findings |
 |---|---|---|---|---|---|
-| ohne K8s, ohne Findings | 42% | — | 32% | 26% | — |
-| mit K8s, ohne Findings | 30% | 30% | 20% | 20% | — |
-| ohne K8s, mit Findings | 36% | — | 27% | 22% | 15% |
-| mit K8s, mit Findings | 26% | 26% | 17% | 16% | 15% |
+| no K8s, no findings | 42% | — | 32% | 26% | — |
+| K8s, no findings | 30% | 30% | 20% | 20% | — |
+| no K8s, with findings | 36% | — | 27% | 22% | 15% |
+| K8s, with findings | 26% | 26% | 17% | 16% | 15% |
 
-Das sind die Standardwerte. Wird der Repo-Typ erkannt, überschreiben typspezifische Gewichtungen diese Tabelle — in einem Infrastructure-Repo zählt Kubernetes bis zu 55 Prozent, in einer Library zählen Dependencies bis zu 50 Prozent.
+Those are the defaults. When the repo type is detected, type-specific weights override this table — Kubernetes counts up to 55 percent in an infrastructure repo, dependencies up to 50 percent in a library.
 
-*Adaptive Gewichtung — die Gewichte ändern sich je nach Repo-Kontext (mit/ohne K8s, mit/ohne Pipeline-Findings). Frontend-Repos ohne K8s bekommen genauso faire Scores wie Full-Stack-Repos mit Helm und Pipeline-Scans.
+The weights adapt to context, so a frontend repo without Kubernetes gets a score that is just as fair as a full-stack repo with Helm charts and pipeline scans.
 
-**Repo-Historie als Kontext:** Bei jeder Analyse wird der aktuelle Score mit dem Median und Trend früherer Analysen desselben Repositories abgeglichen. Liegt der Score deutlich über dem Median, geht er leicht nach oben (max. +5). Folgt er dem üblichen Muster, kann er sich um wenige Punkte abmildern (max. -3). Ab 5 historischen Analysen aktiv.
+> These figures describe **scoring formula v1.0**. Every analysis records the formula version that produced it, so a score from months ago stays reproducible after the formula changes.
 
-### Adjustment-Layer
+**Repo history as context:** every analysis compares the current score against the median and trend of earlier analyses of the same repository. A score well above the median is nudged up (max. +5); one that follows the usual pattern can be softened slightly (max. −3). Active from 5 historical analyses onwards.
 
-Auf den Basis-Score werden vier zusätzliche Layer angewendet:
+### Adjustment layers
 
-| Layer | Auswirkung | Beschreibung |
+Four layers are applied on top of the base score:
+
+| Layer | Effect | Description |
 |---|---|---|
-| Repo-Historie | -3 bis +5 | Vergleich mit Median/Trend früherer Analysen |
-| Time-Awareness | bis +25 | Friday-PM, Wochenende und Late-Night-Deploys = höheres Risiko |
-| Pfad-Klassifizierung | -5 bis +20 | High-Risk-Pfade (`auth/`, `migrations/`) riskanter als `docs/`, `tests/` |
-| Repo-Typ | überschreibt Gewichtung | Frontend / Backend-API / Infra / Library — automatisch erkannt |
+| Repo history | −3 to +5 | Compared against median and trend of earlier analyses |
+| Time awareness | up to +25 | Friday afternoons, weekends and late-night deploys carry more risk |
+| Path classification | −5 to +20 | High-risk paths (`auth/`, `migrations/`) count for more than `docs/` or `tests/` |
+| Repo type | overrides weighting | Frontend / backend API / infrastructure / library — detected automatically |
 
-**Repo-Typ wird automatisch erkannt:**
-- `Dockerfile` + Python-Deps → Backend-API
-- `package.json` ohne Dockerfile → Frontend
-- Terraform-Files (`.tf`) → Infrastructure
-- `setup.py` ohne Dockerfile → Library
-- Sonst → Unknown (Standard-Gewichtung)
+**Repo type detection:**
+- `Dockerfile` + Python deps → backend API
+- `package.json` without a Dockerfile → frontend
+- Terraform files (`.tf`) → infrastructure
+- `setup.py` without a Dockerfile → library
+- Otherwise → unknown (default weighting)
 
-Die Action sendet diese Indikatoren automatisch ans Backend — keine manuelle Konfiguration nötig.
-
----
-
-## Häufige Probleme
-
-### K8s-Score ist 0 obwohl Manifeste geändert wurden
-
-Die Action erkennt K8s-Manifeste anhand des `kind:` Feldes. Prüfe:
-- Enthält deine YAML-Datei `kind: Deployment` / `kind: Service` etc.?
-- Liegt die Datei nicht in `.github/` oder `templates/`?
-- Ist `fetch-depth: 2` gesetzt?
-
-### Score ist immer LOW obwohl viel geändert wurde
-
-Fehlerhistorie (`incidents-last-7d`, `incidents-last-30d`) ist standardmäßig 0. Wenn dein Team Produktionsvorfälle hat, übergib diese manuell.
-
-### Pipeline schlägt nicht fehl bei BLOCKED
-
-Stelle sicher dass `fail-on-blocked: 'true'` gesetzt ist (Standardwert). Und `continue-on-error: true` darf nicht gesetzt sein wenn der Gate greifen soll.
+The action sends these indicators to the backend automatically — no configuration needed.
 
 ---
 
-## Debug-Output
+## Common problems
 
-Die Action gibt alle erkannten Werte vor dem API-Call aus:
+### The K8s score is 0 even though I changed manifests
+
+Manifests are identified by their `kind:` field. Check that:
+- your YAML contains `kind: Deployment`, `kind: Service` and so on
+- the file is not inside `.github/` or `templates/`
+- `fetch-depth: 2` is set
+
+### The score is always LOW even after large changes
+
+Incident history (`incidents-last-7d`, `incidents-last-30d`) defaults to 0. If your team had production incidents, pass them in.
+
+### The pipeline does not fail on BLOCKED
+
+Make sure `fail-on-blocked: 'true'` is set (it is the default), and that `continue-on-error: true` is not set on the step — otherwise the gate cannot stop anything.
+
+---
+
+## Debug output
+
+The action prints every detected value before calling the API:
 
 ```
   [guard] diff_lines_added:     245
@@ -264,16 +269,17 @@ Die Action gibt alle erkannten Werte vor dem API-Call aus:
   [guard] has_node_deps:        false
   [guard] has_terraform:        false
   [guard] has_setup_py:         false
-  
 ```
+
+After the analysis the score breakdown is printed as well — each factor with its value, weight and contribution, plus the mode and any adjustments that were applied.
 
 ---
 
-## API Key holen
+## Getting an API key
 
-1. [pantevosystems.com/signup](https://www.pantevosystems.com/signup) → Free Plan (kostenlos, keine Kreditkarte)
-2. API Key als GitHub Secret anlegen: **Settings → Secrets and variables → Actions → New repository secret → `GUARD_API_KEY`**
-3. Action einbinden — fertig
+1. [pantevosystems.com/signup](https://www.pantevosystems.com/signup) → Free plan (no credit card)
+2. Store the key as a GitHub secret: **Settings → Secrets and variables → Actions → New repository secret → `GUARD_API_KEY`**
+3. Add the action to your workflow — done
 
 ---
 
@@ -281,5 +287,5 @@ Die Action gibt alle erkannten Werte vor dem API-Call aus:
 
 - 🌐 [pantevosystems.com](https://www.pantevosystems.com)
 - 📊 [Dashboard](https://www.pantevosystems.com/dashboard)
-- 🚀 [API Key holen](https://www.pantevosystems.com/signup)
+- 🚀 [Get an API key](https://www.pantevosystems.com/signup)
 - 📧 [support@pantevosystems.com](mailto:support@pantevosystems.com)
