@@ -1,5 +1,7 @@
 # 🛡️ Deployment Guard Action
 
+[![Deployment Guard](https://api.pantevosystems.com/badge/2Yg2FpGsCnQ60zKgsURzH5fk3myKtoX5.svg)](https://www.pantevosystems.com)
+
 Deterministic risk score before every deployment. Analyses your code changes automatically and blocks risky deployments. A formula you can follow — not a black box.
 
 **By [PantevoSystems](https://www.pantevosystems.com)** · [Deutsch](README.de.md)
@@ -280,6 +282,21 @@ After the analysis the score breakdown is printed as well — each factor with i
 1. [pantevosystems.com/signup](https://www.pantevosystems.com/signup) → Free plan (no credit card)
 2. Store the key as a GitHub secret: **Settings → Secrets and variables → Actions → New repository secret → `GUARD_API_KEY`**
 3. Add the action to your workflow — done
+
+---
+
+Score badge
+
+Show the latest risk score of your repository right in your README:
+
+Deployment Guard
+
+markdown
+[![Deployment Guard](https://api.pantevosystems.com/badge/YOUR-TOKEN.svg)](https://www.pantevosystems.com)
+
+Create the badge in the dashboard under Settings → Score badge, then copy the generated Markdown. The colour follows your own thresholds — green below WARN, orange in between, red from BLOCKED upwards.
+
+The URL carries a random token. Neither the repository name nor your account can be derived from it, and the only thing it exposes is the current score. You can revoke a badge from the dashboard at any time.
 
 ---
 

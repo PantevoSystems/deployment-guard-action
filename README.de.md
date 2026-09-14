@@ -1,5 +1,7 @@
 # 🛡️ Deployment Guard Action
 
+[![Deployment Guard](https://api.pantevosystems.com/badge/2Yg2FpGsCnQ60zKgsURzH5fk3myKtoX5.svg)](https://www.pantevosystems.com)
+
 Deterministischer Risk Score vor jedem Deployment. Analysiert Code-Änderungen automatisch und blockiert riskante Deployments. Nachvollziehbare Formel, keine Black Box.
 
 **Von [PantevoSystems](https://www.pantevosystems.com)** · [English](README.md)
@@ -280,6 +282,21 @@ Nach der Analyse folgt die Score-Aufschlüsselung — jeder Faktor mit Wert, Gew
 1. [pantevosystems.com/signup](https://www.pantevosystems.com/signup) → Free Plan (kostenlos, keine Kreditkarte)
 2. API Key als GitHub Secret anlegen: **Settings → Secrets and variables → Actions → New repository secret → `GUARD_API_KEY`**
 3. Action einbinden — fertig
+
+---
+
+Score-Badge
+
+Zeig den letzten Risk Score deines Repositories direkt in der README:
+
+Deployment Guard
+
+markdown
+[![Deployment Guard](https://api.pantevosystems.com/badge/DEIN-TOKEN.svg)](https://www.pantevosystems.com)
+
+Den Badge legst du im Dashboard unter Einstellungen → Score-Badge an und kopierst das fertige Markdown. Die Farbe folgt deinen eigenen Schwellenwerten — grün unterhalb von WARN, orange dazwischen, rot ab BLOCKED.
+
+Die URL enthält einen zufälligen Token. Weder Repository-Name noch Account lassen sich daraus ableiten, sichtbar ist ausschließlich der aktuelle Score. Über das Dashboard lässt sich ein Badge jederzeit widerrufen.
 
 ---
 
