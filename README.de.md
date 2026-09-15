@@ -25,6 +25,23 @@ Deterministischer Risk Score vor jedem Deployment. Analysiert Code-Änderungen a
 
 ---
 
+## Welche Daten die Action sendet
+
+Übertragen werden ausschließlich Zahlen und Ja/Nein-Werte:
+
+- Zeilen hinzugefügt / entfernt
+- Anzahl geänderter Dateien
+- Anzahl geänderter Kubernetes-Manifeste
+- Flags: single replica, missing PDB, Chart gebumpt
+- Trefferzahlen aus Trivy, Semgrep und Checkov
+- Repo-Typ-Indikatoren (liegt ein Dockerfile vor, ja oder nein)
+
+Nicht übertragen werden Quellcode, Diff-Inhalte oder Commit-Messages. Von Dateinamen wird nur das Pfadmuster ausgewertet, also ob eine Änderung etwa unter `auth/` oder unter `docs/` liegt.
+
+Der Risk Score ist eine **deterministische Formel** — gleiche Eingabe, gleiches Ergebnis. Kein Sprachmodell ist an der Berechnung beteiligt. Das Sprachmodell erhält anschließend nur die bereits berechneten Zahlen und formuliert daraus den Erklärungstext.
+
+---
+
 ## Vollständiges Beispiel
 
 ```yaml
@@ -285,16 +302,15 @@ Nach der Analyse folgt die Score-Aufschlüsselung — jeder Faktor mit Wert, Gew
 
 ---
 
-Score-Badge
+## Score-Badge
 
-Zeig den letzten Risk Score deines Repositories direkt in der README:
+Zeig den letzten Risk Score deines Repositories direkt in der README — so wie oben auf dieser Seite:
 
-Deployment Guard
-
-markdown
+```markdown
 [![Deployment Guard](https://api.pantevosystems.com/badge/DEIN-TOKEN.svg)](https://www.pantevosystems.com)
+```
 
-Den Badge legst du im Dashboard unter Einstellungen → Score-Badge an und kopierst das fertige Markdown. Die Farbe folgt deinen eigenen Schwellenwerten — grün unterhalb von WARN, orange dazwischen, rot ab BLOCKED.
+Den Badge legst du im [Dashboard](https://www.pantevosystems.com/dashboard) unter **Einstellungen → Score-Badge** an und kopierst das fertige Markdown. Die Farbe folgt deinen eigenen Schwellenwerten — grün unterhalb von WARN, orange dazwischen, rot ab BLOCKED.
 
 Die URL enthält einen zufälligen Token. Weder Repository-Name noch Account lassen sich daraus ableiten, sichtbar ist ausschließlich der aktuelle Score. Über das Dashboard lässt sich ein Badge jederzeit widerrufen.
 

@@ -25,6 +25,23 @@ Deterministic risk score before every deployment. Analyses your code changes aut
 
 ---
 
+## What the action sends
+
+Only numbers and yes/no values are transmitted:
+
+- lines added / removed
+- number of files changed
+- number of Kubernetes manifests changed
+- flags: single replica, missing PDB, chart bumped
+- finding counts from Trivy, Semgrep and Checkov
+- repo type indicators (is there a Dockerfile, yes or no)
+
+Source code, diff contents and commit messages are not transmitted. Of your file names, only the path pattern is evaluated — whether a change sits under `auth/` or under `docs/`, for example.
+
+The risk score is a **deterministic formula** — same input, same result. No language model takes part in the calculation. The language model only receives the numbers that have already been computed, and turns them into the explanation text.
+
+---
+
 ## Full example
 
 ```yaml
@@ -285,16 +302,15 @@ After the analysis the score breakdown is printed as well — each factor with i
 
 ---
 
-Score badge
+## Score badge
 
-Show the latest risk score of your repository right in your README:
+Show the latest risk score of your repository right in your README — like the one at the top of this page:
 
-Deployment Guard
-
-markdown
+```markdown
 [![Deployment Guard](https://api.pantevosystems.com/badge/YOUR-TOKEN.svg)](https://www.pantevosystems.com)
+```
 
-Create the badge in the dashboard under Settings → Score badge, then copy the generated Markdown. The colour follows your own thresholds — green below WARN, orange in between, red from BLOCKED upwards.
+Create the badge in the [dashboard](https://www.pantevosystems.com/dashboard) under **Settings → Score badge**, then copy the generated Markdown. The colour follows your own thresholds — green below WARN, orange in between, red from BLOCKED upwards.
 
 The URL carries a random token. Neither the repository name nor your account can be derived from it, and the only thing it exposes is the current score. You can revoke a badge from the dashboard at any time.
 
