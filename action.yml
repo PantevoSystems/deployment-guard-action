@@ -54,12 +54,16 @@ inputs:
 outputs:
   score:
     description: 'Risk score (0-100)'
+    value: ${{ steps.analyze.outputs.score }}
   verdict:
     description: 'Verdict (LOW RISK / MEDIUM RISK / HIGH RISK / CRITICAL RISK)'
+    value: ${{ steps.analyze.outputs.verdict }}
   status:
-    description: 'Status (PASS / WARN / BLOCKED)'
+    description: 'Status (PASS / WARN / BLOCKED). Decided by the API using the thresholds from your dashboard.'
+    value: ${{ steps.analyze.outputs.status }}
   explanation:
     description: 'Plain-language explanation of the score'
+    value: ${{ steps.analyze.outputs.explanation }}
 
 runs:
   using: 'composite'
@@ -69,6 +73,7 @@ runs:
       run: chmod +x ${{ github.action_path }}/scripts/analyze.sh
 
     - name: Run Deployment Guard Analysis
+      id: analyze
       shell: bash
       run: ${{ github.action_path }}/scripts/analyze.sh
       env:

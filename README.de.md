@@ -310,7 +310,7 @@ Zeig den letzten Risk Score deines Repositories direkt in der README — so wie 
 [![Deployment Guard](https://api.pantevosystems.com/badge/DEIN-TOKEN.svg)](https://www.pantevosystems.com)
 ```
 
-Den Badge legst du im [Dashboard](https://www.pantevosystems.com/dashboard) unter **Einstellungen → Score-Badge** an und kopierst das fertige Markdown. Die Farbe folgt deinen eigenen Schwellenwerten — grün unterhalb von WARN, orange dazwischen, rot ab BLOCKED.
+Den Badge legst du im [Dashboard](https://www.pantevosystems.com/dashboard) unter **Einstellungen → Integrationen → Score-Badge** an und kopierst das fertige Markdown. Die Farbe folgt deinen eigenen Schwellenwerten — grün unterhalb von WARN, orange dazwischen, rot ab BLOCKED.
 
 Die URL enthält einen zufälligen Token. Weder Repository-Name noch Account lassen sich daraus ableiten, sichtbar ist ausschließlich der aktuelle Score. Über das Dashboard lässt sich ein Badge jederzeit widerrufen.
 
