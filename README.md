@@ -13,7 +13,7 @@ Deterministic risk score before every deployment. Analyses your code changes aut
 ```yaml
 - uses: actions/checkout@v4
   with:
-    fetch-depth: 2
+    fetch-depth: 0
 
 - name: Deployment Guard
   uses: PantevoSystems/deployment-guard-action@v1
@@ -21,24 +21,28 @@ Deterministic risk score before every deployment. Analyses your code changes aut
     api-key: ${{ secrets.GUARD_API_KEY }}
 ```
 
-> ⚠️ `fetch-depth: 2` is required — without the previous commit there is no diff to analyse.
+> ⚠️ **Full history required.** Use `fetch-depth: 0` (recommended). `fetch-depth: 2` only covers single-commit pushes — for pushes with several commits or for pull requests the base commit is missing. The action diffs against `github.event.before` (push), `pull_request.base.sha` (pull request) or `HEAD~1` (fallback); you can override the base with the env variable `GUARD_DIFF_BASE`. If the base commit is missing from a shallow clone, the step **fails** instead of silently scoring an empty diff.
+
+> 📌 **Pinning:** reference `@v1` (major tag) or, for maximum supply-chain safety, a full commit SHA (`PantevoSystems/deployment-guard-action@<sha> # v1.x.y`). Never use `@main`.
 
 ---
 
 ## What the action sends
 
-Only numbers and yes/no values are transmitted:
+Each run sends one JSON request to `<api-url>/analyze`. It contains:
 
-- lines added / removed
-- number of files changed
-- number of Kubernetes manifests changed
-- flags: single replica, missing PDB, chart bumped
-- finding counts from Trivy, Semgrep and Checkov
-- repo type indicators (is there a Dockerfile, yes or no)
+- repository name (`owner/repo`), branch name and commit SHA
+- the **paths** of the changed files (max. 500 paths, each truncated to 300 characters) — **no file contents**
+- line and file counts of the diff (lines added / removed, files changed)
+- Kubernetes/Helm flags: number of changed manifests, single replica, missing PDB, Helm values changed, chart bumped
+- dependency file changes and the number of major version bumps
+- finding counts from Trivy, Semgrep and Checkov (when passed in)
+- incident counts for the last 7 / 30 days (when passed in)
+- repo type indicators (Dockerfile, Python/Node dependencies, Terraform, `setup.py` present: yes/no)
 
-Source code, diff contents and commit messages are not transmitted. Of your file names, only the path pattern is evaluated — whether a change sits under `auth/` or under `docs/`, for example.
+Not transmitted: source code, diff contents, file contents, commit messages.
 
-The risk score is a **deterministic formula** — same input, same result. No language model takes part in the calculation. The language model only receives the numbers that have already been computed, and turns them into the explanation text.
+The risk score is a **deterministic formula** — same input, same result. No language model takes part in the calculation. The explanation text is generated afterwards by an OpenAI language model from the computed factors and the changed file paths; it does not change the score.
 
 ---
 
@@ -57,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Deployment Guard
         id: guard
@@ -69,10 +73,15 @@ jobs:
           incidents-last-30d: '0'
 
       - name: Show score
+        # Pass outputs via env — never interpolate ${{ }} directly into run:
+        env:
+          SCORE: ${{ steps.guard.outputs.score }}
+          STATUS: ${{ steps.guard.outputs.status }}
+          VERDICT: ${{ steps.guard.outputs.verdict }}
         run: |
-          echo "Score:   ${{ steps.guard.outputs.score }}"
-          echo "Status:  ${{ steps.guard.outputs.status }}"
-          echo "Verdict: ${{ steps.guard.outputs.verdict }}"
+          echo "Score:   $SCORE"
+          echo "Status:  $STATUS"
+          echo "Verdict: $VERDICT"
 
   deploy:
     needs: risk-check
@@ -112,8 +121,10 @@ Templates: [PantevoSystems/pipeline-security-templates](https://github.com/Pante
 
 | Input | Description | Required | Default |
 |---|---|---|---|
-| `api-key` | Deployment Guard API key | ✅ | — |
+| `api-key` | Deployment Guard API key (the step fails if it is empty) | ✅ | — |
 | `fail-on-blocked` | Fail the pipeline on BLOCKED | ❌ | `true` |
+| `fail-open` | `true`: API unreachable, HTTP 429/5xx or an invalid response only warn and the deployment continues. `false`: these cases fail the step | ❌ | `false` |
+| `api-url` | API base URL (must be `https://`) | ❌ | `https://api.pantevosystems.com` |
 | `incidents-last-7d` | Production incidents in the last 7 days (pass manually) | ❌ | `0` |
 | `incidents-last-30d` | Production incidents in the last 30 days (pass manually) | ❌ | `0` |
 | `trivy-critical-cves` | CRITICAL CVEs from Trivy (CVSS ≥ 9.0) | ❌ | `0` |
@@ -122,6 +133,25 @@ Templates: [PantevoSystems/pipeline-security-templates](https://github.com/Pante
 | `semgrep-high-severity` | HIGH-severity Semgrep findings (level=error) | ❌ | `0` |
 | `checkov-failed-checks` | Failed Checkov checks | ❌ | `0` |
 | `checkov-critical-failures` | CRITICAL Checkov failures | ❌ | `0` |
+| `diff-changed-paths` | Comma-separated list of changed paths (overrides auto-detection) | ❌ | — |
+
+All count inputs must be non-negative integers — anything else fails the step.
+
+---
+
+## Failure handling (fail-closed by default)
+
+| Situation | `fail-open: 'false'` (default) | `fail-open: 'true'` |
+|---|---|---|
+| API unreachable / timeout | ❌ step fails | ⚠️ warning, deployment continues |
+| HTTP 429 (analysis limit) | ❌ step fails | ⚠️ warning, deployment continues |
+| HTTP 5xx | ❌ step fails | ⚠️ warning, deployment continues |
+| Invalid response (no JSON, status not PASS/WARN/BLOCKED) | ❌ step fails | ⚠️ warning, deployment continues |
+| HTTP 401/403 (invalid API key) | ❌ always fails | ❌ always fails |
+| HTTP 400/422 (rejected request) | ❌ always fails | ❌ always fails |
+| Base commit missing (shallow clone) | ❌ always fails | ❌ always fails |
+
+A security gate that silently lets everything through during an outage is no gate — so the default is fail-closed. Set `fail-open: 'true'` only if availability of your deploy pipeline matters more than the gate.
 
 ---
 
@@ -247,7 +277,7 @@ The action sends these indicators to the backend automatically — no configurat
 Manifests are identified by their `kind:` field. Check that:
 - your YAML contains `kind: Deployment`, `kind: Service` and so on
 - the file is not inside `.github/` or `templates/`
-- `fetch-depth: 2` is set
+- `fetch-depth: 0` is set on `actions/checkout`
 
 ### The score is always LOW even after large changes
 
