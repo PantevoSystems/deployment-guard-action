@@ -1,5 +1,5 @@
 name: 'Deployment Guard'
-description: 'Deterministic risk score before every deployment. Scores your diff, Kubernetes changes and pipeline findings, and blocks risky deployments automatically.'
+description: 'Deterministic risk score for every deployment. Blocks risky deploys based on diff, Kubernetes changes and scanner findings.'
 author: 'PantevoSystems'
 
 branding:
