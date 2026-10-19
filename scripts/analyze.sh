@@ -65,7 +65,7 @@ case "$GUARD_API_KEY" in
   *$'\n'*|*$'\r'*) die "api-key enthält Zeilenumbrüche — bitte das Secret prüfen." ;;
 esac
 
-FAIL_OPEN="${FAIL_OPEN:-false}"
+FAIL_OPEN="${FAIL_OPEN:-true}"
 case "$FAIL_OPEN" in
   true|false) ;;
   *) die "fail-open muss 'true' oder 'false' sein (erhalten: '${FAIL_OPEN}')." ;;
@@ -389,8 +389,8 @@ jq -n \
   }' > "$PAYLOAD_FILE" || die "Payload konnte nicht erzeugt werden."
 
 # ── Fehlerbehandlung: fail-open vs. fail-closed ──────────────────────────
-# fail-open=true  → API nicht erreichbar / 429 / 5xx / ungültige Antwort: Warnung, Deployment läuft weiter
-# fail-open=false → dieselben Fälle brechen ab (Standard)
+# fail-open=true  → API nicht erreichbar / 429 / 5xx / ungültige Antwort: Warnung, Deployment läuft weiter (Standard)
+# fail-open=false → dieselben Fälle brechen ab
 # 400/401/403/422 (falscher Key, fehlerhafte Anfrage) brechen IMMER ab.
 new_tmp RESP_FILE
 
@@ -404,7 +404,7 @@ print_body() {
 
 soft_fail() {
   if [ "$FAIL_OPEN" = "true" ]; then
-    echo "⚠️  Deployment Guard: $1 — fail-open aktiv, Deployment wird fortgesetzt."
+    echo "⚠️  Deployment Guard: $1 — Deployment wird ohne Bewertung fortgesetzt (fail-open). Strenger: fail-open: 'false'."
     print_body
     exit 0
   fi

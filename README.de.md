@@ -53,7 +53,7 @@ name: Deploy
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
 
 jobs:
   risk-check:
@@ -100,7 +100,7 @@ Für vollständigen DevSecOps-Stack — Trivy + Semgrep + Checkov werden ausgef�
 ```yaml
 jobs:
   security:
-    uses: PantevoSystems/pipeline-security-templates/.github/workflows/full-stack-with-guard.yml@v1.2.0
+    uses: PantevoSystems/pipeline-security-templates/.github/workflows/full-stack-with-guard.yml@v1.2.4
     permissions:
       contents: read
       security-events: write
@@ -123,7 +123,7 @@ Templates: [PantevoSystems/pipeline-security-templates](https://github.com/Pante
 |---|---|---|---|
 | `api-key` | Deployment Guard API Key (leer → Schritt schlägt fehl) | ✅ | — |
 | `fail-on-blocked` | Pipeline bei BLOCKED fehlschlagen lassen | ❌ | `true` |
-| `fail-open` | `true`: API nicht erreichbar, HTTP 429/5xx oder ungültige Antwort erzeugen nur eine Warnung, das Deployment läuft weiter. `false`: diese Fälle lassen den Schritt fehlschlagen | ❌ | `false` |
+| `fail-open` | `true`: API nicht erreichbar, HTTP 429/5xx oder ungültige Antwort erzeugen nur eine Warnung, das Deployment läuft weiter. `false`: diese Fälle lassen den Schritt fehlschlagen | ❌ | `true` |
 | `api-url` | Basis-URL der API (muss `https://` sein) | ❌ | `https://api.pantevosystems.com` |
 | `incidents-last-7d` | Produktionsvorfälle letzte 7 Tage (manuell angeben) | ❌ | `0` |
 | `incidents-last-30d` | Produktionsvorfälle letzte 30 Tage (manuell angeben) | ❌ | `0` |
@@ -139,19 +139,20 @@ Alle Zahlen-Inputs müssen nicht-negative ganze Zahlen sein — alles andere lä
 
 ---
 
-## Fehlerverhalten (standardmäßig fail-closed)
+## Fehlerverhalten (standardmäßig Advisory Gate)
 
-| Situation | `fail-open: 'false'` (Standard) | `fail-open: 'true'` |
+| Situation | `fail-open: 'true'` (Standard) | `fail-open: 'false'` |
 |---|---|---|
-| API nicht erreichbar / Timeout | ❌ Schritt schlägt fehl | ⚠️ Warnung, Deployment läuft weiter |
-| HTTP 429 (Analyse-Limit) | ❌ Schritt schlägt fehl | ⚠️ Warnung, Deployment läuft weiter |
-| HTTP 5xx | ❌ Schritt schlägt fehl | ⚠️ Warnung, Deployment läuft weiter |
-| Ungültige Antwort (kein JSON, Status nicht PASS/WARN/BLOCKED) | ❌ Schritt schlägt fehl | ⚠️ Warnung, Deployment läuft weiter |
+| API nicht erreichbar / Timeout | ⚠️ Warnung, Deployment läuft weiter | ❌ Schritt schlägt fehl |
+| HTTP 429 (Analyse-Limit) | ⚠️ Warnung, Deployment läuft weiter | ❌ Schritt schlägt fehl |
+| HTTP 5xx | ⚠️ Warnung, Deployment läuft weiter | ❌ Schritt schlägt fehl |
+| Ungültige Antwort (kein JSON, Status nicht PASS/WARN/BLOCKED) | ⚠️ Warnung, Deployment läuft weiter | ❌ Schritt schlägt fehl |
+| `api-key` leer | ❌ immer Fehler | ❌ immer Fehler |
 | HTTP 401/403 (ungültiger API Key) | ❌ immer Fehler | ❌ immer Fehler |
 | HTTP 400/422 (Anfrage abgelehnt) | ❌ immer Fehler | ❌ immer Fehler |
 | Basis-Commit fehlt (flacher Clone) | ❌ immer Fehler | ❌ immer Fehler |
 
-Ein Security-Gate, das bei einem Ausfall still alles durchwinkt, ist kein Gate — deshalb ist fail-closed der Standard. `fail-open: 'true'` nur setzen, wenn die Verfügbarkeit der Deploy-Pipeline wichtiger ist als das Gate.
+Deployment Guard ist ein Advisory Gate: Ein Ausfall unserer API stoppt nie eure Deployments. Fehlkonfiguration (fehlender oder falscher Key, ungültige Eingaben) schlägt immer fehl, damit das Gate nicht versehentlich umgangen wird. Wer ohne Score nie deployen will, setzt `fail-open: 'false'`.
 
 ---
 
