@@ -15,11 +15,11 @@ inputs:
     required: false
     default: 'https://api.pantevosystems.com'
   fail-open:
-    description: "Default 'true': an unreachable API, HTTP 429/5xx or an invalid response only prints a warning and the deployment continues. Set 'false' to fail closed. A missing or invalid API key (401/403) and rejected requests (400/422) always fail."
+    description: "Default 'true': only outages (network error/timeout, HTTP 429, HTTP 5xx, or an invalid body on HTTP 200) print a warning and the deployment continues. Set 'false' to fail closed. Every other HTTP status (redirects, 401/402/403/404/413/422, ...) always fails."
     required: false
     default: 'true'
   fail-on-blocked:
-    description: 'Fail the pipeline when the status is BLOCKED'
+    description: "Fail the pipeline when the status is BLOCKED ('true' or 'false', anything else fails the step)"
     required: false
     default: 'true'
   incidents-last-7d:

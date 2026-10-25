@@ -23,6 +23,13 @@ Deterministic risk score before every deployment. Analyses your code changes aut
 
 > ⚠️ **Full history required.** Use `fetch-depth: 0` (recommended). `fetch-depth: 2` only covers single-commit pushes — for pushes with several commits or for pull requests the base commit is missing. The action diffs against `github.event.before` (push), `pull_request.base.sha` (pull request) or `HEAD~1` (fallback); you can override the base with the env variable `GUARD_DIFF_BASE`. If the base commit is missing from a shallow clone, the step **fails** instead of silently scoring an empty diff.
 
+> 🏷️ **Tag, release and `workflow_dispatch` deploys:** these events have no usable "before" commit, so the action falls back to `HEAD~1` and only the last commit is scored. The log then shows `[guard] WARNING: diff base fell back to HEAD~1` plus a workflow warning. Set `GUARD_DIFF_BASE` (e.g. the previously deployed tag or SHA) for such deploys:
+>
+> ```yaml
+> env:
+>   GUARD_DIFF_BASE: ${{ steps.last-deploy.outputs.sha }}   # e.g. the previous release tag
+> ```
+
 > 📌 **Pinning:** reference `@v1` (major tag) or, for maximum supply-chain safety, a full commit SHA (`PantevoSystems/deployment-guard-action@<sha> # v1.x.y`). Never use `@main`.
 
 ---
@@ -100,7 +107,7 @@ For a full DevSecOps stack — Trivy, Semgrep and Checkov run first, and their f
 ```yaml
 jobs:
   security:
-    uses: PantevoSystems/pipeline-security-templates/.github/workflows/full-stack-with-guard.yml@v1.2.4
+    uses: PantevoSystems/pipeline-security-templates/.github/workflows/full-stack-with-guard.yml@v1.2.5
     permissions:
       contents: read
       security-events: write
@@ -122,8 +129,8 @@ Templates: [PantevoSystems/pipeline-security-templates](https://github.com/Pante
 | Input | Description | Required | Default |
 |---|---|---|---|
 | `api-key` | Deployment Guard API key (the step fails if it is empty) | ✅ | — |
-| `fail-on-blocked` | Fail the pipeline on BLOCKED | ❌ | `true` |
-| `fail-open` | `true`: API unreachable, HTTP 429/5xx or an invalid response only warn and the deployment continues. `false`: these cases fail the step | ❌ | `true` |
+| `fail-on-blocked` | Fail the pipeline on BLOCKED (`true`/`false` only — any other value fails the step) | ❌ | `true` |
+| `fail-open` | `true`: only outages — API unreachable/timeout, HTTP 429, HTTP 5xx or an invalid body on HTTP 200 — warn and the deployment continues. `false`: these cases fail the step. All other HTTP statuses always fail | ❌ | `true` |
 | `api-url` | API base URL (must be `https://`) | ❌ | `https://api.pantevosystems.com` |
 | `incidents-last-7d` | Production incidents in the last 7 days (pass manually) | ❌ | `0` |
 | `incidents-last-30d` | Production incidents in the last 30 days (pass manually) | ❌ | `0` |
@@ -146,13 +153,15 @@ All count inputs must be non-negative integers — anything else fails the step.
 | API unreachable / timeout | ⚠️ warning, deployment continues | ❌ step fails |
 | HTTP 429 (analysis limit) | ⚠️ warning, deployment continues | ❌ step fails |
 | HTTP 5xx | ⚠️ warning, deployment continues | ❌ step fails |
-| Invalid response (no JSON, status not PASS/WARN/BLOCKED) | ⚠️ warning, deployment continues | ❌ step fails |
+| HTTP 200 with invalid body (no JSON, status not PASS/WARN/BLOCKED, bad score) | ⚠️ warning, deployment continues | ❌ step fails |
 | `api-key` empty | ❌ always fails | ❌ always fails |
 | HTTP 401/403 (invalid API key) | ❌ always fails | ❌ always fails |
 | HTTP 400/422 (rejected request) | ❌ always fails | ❌ always fails |
+| Any other status: 3xx redirect (never followed — the key is not sent on), 402, 404, 405, 407, 413, … | ❌ always fails | ❌ always fails |
+| `fail-open` / `fail-on-blocked` not exactly `true` or `false` | ❌ always fails | ❌ always fails |
 | Base commit missing (shallow clone) | ❌ always fails | ❌ always fails |
 
-Deployment Guard is an advisory gate: an outage of our API never stops your deployments. Misconfiguration (missing or wrong key, invalid input) always fails, so the gate cannot be bypassed by accident. Set `fail-open: 'false'` if your deployments must never run without a score.
+Deployment Guard is an advisory gate: an outage of our API (network, timeout, 429, 5xx, broken 200 body) never stops your deployments. Everything else — misconfiguration (missing or wrong key, invalid input, wrong `api-url`, proxy or redirect) — always fails, so the gate cannot be bypassed by accident. Set `fail-open: 'false'` if your deployments must never run without a score.
 
 ---
 
@@ -173,7 +182,9 @@ The action derives these factors from the git diff on its own:
 
 ### Diff complexity
 - Lines changed (added + removed)
-- Files changed
+- Files changed (binary files count as changed files without line counts)
+
+> 🔒 **`.gitattributes` cannot hide changes.** All diffs run with the repository's attributes disabled (`attr.tree` = empty tree, git ≥ 2.40), so a `* -diff` or `binary` entry in `.gitattributes` does not turn line counts into 0. A changed `.gitattributes` is flagged in the log.
 
 ### Kubernetes risk
 Real K8s manifests are identified by their `kind:` field. Excluded:

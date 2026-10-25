@@ -16,9 +16,26 @@ rand_hex() {
 }
 
 # Workflow-Commands (::set-output, ::add-mask, ##[...]) in fremdem Text entschärfen.
-# Zeilen, die (nach Leerzeichen) mit "::" oder "##[" beginnen, bekommen ein Präfix.
+# 1. Steuerzeichen außer \n und \t entfernen (u. a. \r, ESC/ANSI, NUL) — ein \r kann
+#    sonst eine neue Log-Zeile beginnen, die der Runner als Workflow-Command liest.
+# 2. Zeilen, die (nach Leerzeichen) mit "::" oder "##[" beginnen, bekommen ein Präfix.
 sanitize() {
-  sed -E 's/^([[:space:]]*)(::|##\[)/\1> \2/'
+  LC_ALL=C tr -d '\000-\010\013-\037\177' | sed -E 's/^([[:space:]]*)(::|##\[)/\1> \2/'
+}
+
+# Fremden Text (API-Antworten) ausgeben: bereinigt UND auf GitHub zusätzlich
+# zwischen ::stop-commands:: — so wird er nie als Workflow-Command ausgewertet.
+print_untrusted() {
+  local token=""
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    token="dg$(rand_hex)$(rand_hex)"
+    echo "::stop-commands::${token}"
+  fi
+  sanitize
+  if [ -n "$token" ]; then
+    echo ""
+    echo "::${token}::"
+  fi
 }
 
 # GITHUB_OUTPUT per Heredoc-Syntax mit zufälligem Delimiter schreiben —
@@ -71,6 +88,10 @@ case "$FAIL_OPEN" in
   *) die "fail-open muss 'true' oder 'false' sein (erhalten: '${FAIL_OPEN}')." ;;
 esac
 FAIL_ON_BLOCKED="${FAIL_ON_BLOCKED:-true}"
+case "$FAIL_ON_BLOCKED" in
+  true|false) ;;
+  *) die "fail-on-blocked muss 'true' oder 'false' sein (erhalten: '${FAIL_ON_BLOCKED}')." ;;
+esac
 
 # API-URL kommt ausschließlich über den Input 'api-url' (env API_URL), nicht aus geerbten Variablen.
 API_URL="${API_URL:-https://api.pantevosystems.com}"
@@ -122,6 +143,7 @@ base_missing() {
 
 DIFF_BASE=""
 BASE_SOURCE=""
+BASE_FALLBACK_REASON=""
 if [ -n "${GUARD_DIFF_BASE:-}" ]; then
   DIFF_BASE="$GUARD_DIFF_BASE"
   BASE_SOURCE="GUARD_DIFF_BASE"
@@ -135,6 +157,7 @@ elif [ "${GITHUB_EVENT_NAME:-}" = "push" ] && [[ "${GITHUB_EVENT_BEFORE:-}" =~ ^
   else
     # Vollständiger Clone, aber Commit unbekannt (z. B. nach Force-Push) → HEAD~1
     echo "⚠️  Deployment Guard: github.event.before (${GITHUB_EVENT_BEFORE:0:7}) nicht in der Historie (Force-Push?) — nutze HEAD~1."
+    BASE_FALLBACK_REASON="force push"
   fi
 elif [[ "${GITHUB_EVENT_NAME:-}" == pull_request* ]] && [ -n "${GITHUB_PR_BASE_SHA:-}" ]; then
   DIFF_BASE="$GITHUB_PR_BASE_SHA"
@@ -146,6 +169,11 @@ if [ -z "$DIFF_BASE" ]; then
   if commit_exists "HEAD~1"; then
     DIFF_BASE="HEAD~1"
     BASE_SOURCE="HEAD~1"
+    # Tag-Push (before = 000…), neuer Branch, workflow_dispatch, release, Force-Push:
+    # nur der letzte Commit wird bewertet — laut und sichtbar warnen.
+    # ::warning:: hier, VOR jeder Ausgabe fremder Daten (Dateinamen, API-Text).
+    echo "::warning title=Deployment Guard::Diff base fell back to HEAD~1 (event: ${GITHUB_EVENT_NAME:-unknown}${BASE_FALLBACK_REASON:+, ${BASE_FALLBACK_REASON}}) - only the last commit is scored. Set GUARD_DIFF_BASE for tag/release/dispatch deploys."
+    echo "  [guard] WARNING: diff base fell back to HEAD~1 – only the last commit is scored. Set GUARD_DIFF_BASE for tag/release/dispatch deploys."
   elif [ "$IS_SHALLOW" = "false" ] && commit_exists "HEAD"; then
     # Erster Commit im Repo: gegen den leeren Baum vergleichen
     DIFF_BASE="$EMPTY_TREE"
@@ -158,12 +186,27 @@ fi
 echo "  [guard] diff_base:            ${DIFF_BASE} (${BASE_SOURCE})"
 
 # ── Diff-Statistik (base..HEAD) ──────────────────────────────────────────
-NUMSTAT=$(git diff --numstat "$DIFF_BASE" HEAD) || die "git diff --numstat ${DIFF_BASE}..HEAD fehlgeschlagen."
+# .gitattributes aus dem Repo (z. B. "* -diff" oder "binary") würde numstat auf "-\t-"
+# setzen und die Zeilenzahlen auf 0 drücken. Deshalb alle Diffs mit leerem
+# Attribut-Baum: attr.tree (git >= 2.42) bzw. GIT_ATTR_SOURCE (git >= 2.40).
+gdiff() {
+  GIT_ATTR_SOURCE="$EMPTY_TREE" git -c attr.tree="$EMPTY_TREE" -c core.quotePath=false diff --no-ext-diff --no-textconv "$@"
+}
+GIT_VER=$(git version 2>/dev/null | sed -nE 's/^git version ([0-9]+)\.([0-9]+).*/\1 \2/p')
+read -r GIT_MAJ GIT_MIN <<< "${GIT_VER:-0 0}"
+if [ "${GIT_MAJ:-0}" -lt 2 ] || { [ "${GIT_MAJ:-0}" -eq 2 ] && [ "${GIT_MIN:-0}" -lt 40 ]; }; then
+  echo "::warning title=Deployment Guard::git ${GIT_MAJ}.${GIT_MIN} is older than 2.40 - .gitattributes in the repo can hide diff lines. Update git on the runner."
+  echo "  [guard] WARNING: git < 2.40 — .gitattributes-Schutz nicht verfügbar, Zeilenzahlen können zu niedrig sein."
+fi
+
+NUMSTAT=$(gdiff --numstat "$DIFF_BASE" HEAD) || die "git diff --numstat ${DIFF_BASE}..HEAD fehlgeschlagen."
 ADDED=$(printf '%s\n' "$NUMSTAT" | awk '$1 ~ /^[0-9]+$/ {sum += $1} END {print sum+0}')
 REMOVED=$(printf '%s\n' "$NUMSTAT" | awk '$2 ~ /^[0-9]+$/ {sum += $2} END {print sum+0}')
+# Echte Binärdateien ("-\t-") haben keine Zeilenzahl, zählen aber als geänderte Datei.
+BINARY_FILES=$(printf '%s\n' "$NUMSTAT" | awk -F '\t' '$1 == "-" && $2 == "-" {n++} END {print n+0}')
 
 new_tmp NAMES_FILE
-git -c core.quotePath=false diff --name-only -z "$DIFF_BASE" HEAD > "$NAMES_FILE" \
+gdiff --name-only -z "$DIFF_BASE" HEAD > "$NAMES_FILE" \
   || die "git diff --name-only ${DIFF_BASE}..HEAD fehlgeschlagen."
 
 CHANGED_FILES=()
@@ -171,6 +214,13 @@ while IFS= read -r -d '' f; do
   [ -n "$f" ] && CHANGED_FILES+=("$f")
 done < "$NAMES_FILE"
 FILES=${#CHANGED_FILES[@]}
+
+GITATTR_CHANGED=0
+if [ "$FILES" -gt 0 ]; then
+  for f in "${CHANGED_FILES[@]}"; do
+    [ "${f##*/}" = ".gitattributes" ] && GITATTR_CHANGED=$((GITATTR_CHANGED + 1))
+  done
+fi
 
 # Newline-Liste nur für Mustererkennung (grep), nicht für den Payload
 CHANGED_LIST=""
@@ -256,7 +306,7 @@ DEP_FILES=$(printf '%s' "$CHANGED_LIST" | \
 MAJOR_BUMPS=0
 
 if printf '%s' "$CHANGED_LIST" | grep -q 'package\.json'; then
-  PKG_MAJOR=$(git diff "$DIFF_BASE" HEAD -- package.json 2>/dev/null | \
+  PKG_MAJOR=$(gdiff "$DIFF_BASE" HEAD -- package.json 2>/dev/null | \
     grep '^[+-]' | grep -v '^---\|^+++' | \
     grep -oE '"[0-9]+\.' | grep -oE '[0-9]+' | \
     sort -n | uniq -d | wc -l | tr -d ' ')
@@ -265,7 +315,7 @@ if printf '%s' "$CHANGED_LIST" | grep -q 'package\.json'; then
 fi
 
 if printf '%s' "$CHANGED_LIST" | grep -q 'requirements\.txt'; then
-  REQ_MAJOR=$(git diff "$DIFF_BASE" HEAD -- requirements.txt 2>/dev/null | \
+  REQ_MAJOR=$(gdiff "$DIFF_BASE" HEAD -- requirements.txt 2>/dev/null | \
     grep '^[+-][a-zA-Z]' | grep -oE '==[0-9]+' | grep -oE '[0-9]+' | \
     sort | uniq -d | wc -l | tr -d ' ')
   [ -z "$REQ_MAJOR" ] && REQ_MAJOR=0
@@ -273,7 +323,7 @@ if printf '%s' "$CHANGED_LIST" | grep -q 'requirements\.txt'; then
 fi
 
 if printf '%s' "$CHANGED_LIST" | grep -q 'go\.mod'; then
-  GO_MAJOR=$(git diff "$DIFF_BASE" HEAD -- go.mod 2>/dev/null | \
+  GO_MAJOR=$(gdiff "$DIFF_BASE" HEAD -- go.mod 2>/dev/null | \
     grep '^[+-]' | grep -v '^---\|^+++' | \
     grep -oE '/v[0-9]+' | grep -oE '[0-9]+' | \
     sort -n | uniq -d | wc -l | tr -d ' ')
@@ -298,7 +348,7 @@ PATHS_PREVIEW=$(jq -r '.[:20] | join(",")' "$PATHS_FILE")
 [ "$PATHS_COUNT" -gt 20 ] && PATHS_PREVIEW="${PATHS_PREVIEW},… (${PATHS_COUNT} gesamt)"
 
 # Alle Zähler sind intern berechnet — trotzdem prüfen, bevor sie als JSON-Zahl gehen
-for v in "$ADDED" "$REMOVED" "$FILES" "$K8S" "$HELM_VALUES" "$DEP_FILES" "$MAJOR_BUMPS"; do
+for v in "$ADDED" "$REMOVED" "$FILES" "$BINARY_FILES" "$K8S" "$HELM_VALUES" "$DEP_FILES" "$MAJOR_BUMPS"; do
   [[ "$v" =~ ^[0-9]+$ ]] || die "Interner Fehler: ungültiger Zählerwert '${v}'."
 done
 
@@ -306,6 +356,10 @@ done
 echo "  [guard] diff_lines_added:     ${ADDED}"
 echo "  [guard] diff_lines_removed:   ${REMOVED}"
 echo "  [guard] diff_files_changed:   ${FILES}"
+echo "  [guard] binary_files_changed: ${BINARY_FILES} (ohne Zeilenzahl, als geänderte Datei gezählt)"
+if [ "$GITATTR_CHANGED" -gt 0 ]; then
+  echo "  [guard] WARNING: .gitattributes geändert (${GITATTR_CHANGED}x) — Repo-Attribute werden für den Diff ignoriert, Änderung bitte reviewen."
+fi
 echo "  [guard] k8s_manifests:        ${K8S}"
 echo "  [guard] single_replica:       ${SINGLE_REPLICA}"
 echo "  [guard] missing_pdb:          ${MISSING_PDB}"
@@ -389,26 +443,36 @@ jq -n \
   }' > "$PAYLOAD_FILE" || die "Payload konnte nicht erzeugt werden."
 
 # ── Fehlerbehandlung: fail-open vs. fail-closed ──────────────────────────
-# fail-open=true  → API nicht erreichbar / 429 / 5xx / ungültige Antwort: Warnung, Deployment läuft weiter (Standard)
+# fail-open=true  → nur echte Ausfälle: Netzwerk-/curl-Fehler, Timeout, HTTP 429, HTTP 5xx
+#                   oder ungültiger Body bei HTTP 200 → Warnung, Deployment läuft weiter (Standard)
 # fail-open=false → dieselben Fälle brechen ab
-# 400/401/403/422 (falscher Key, fehlerhafte Anfrage) brechen IMMER ab.
+# Alle anderen HTTP-Codes (3xx-Redirects, 4xx inkl. 401/402/403/404/405/407/413/422) brechen IMMER ab.
+# curl folgt Redirects bewusst NICHT (kein -L) — der API Key geht nie an ein Redirect-Ziel.
 new_tmp RESP_FILE
 
 print_body() {
   if [ -s "$RESP_FILE" ]; then
     echo "Response (gekürzt):"
-    head -c 2000 "$RESP_FILE" | sanitize
+    head -c 2000 "$RESP_FILE" | print_untrusted
     echo ""
   fi
 }
 
+# Immer abbrechen — unabhängig von fail-open (Konfigurations-/Anfragefehler, kein Ausfall)
+hard_fail() {
+  printf '❌ Deployment Guard: %s — Deployment wird gestoppt (gilt auch bei fail-open: '"'"'true'"'"').\n' "$1" | sanitize >&2
+  print_body
+  exit 1
+}
+
+# $1 kann Ausschnitte der API-Antwort enthalten → immer über sanitize ausgeben
 soft_fail() {
   if [ "$FAIL_OPEN" = "true" ]; then
-    echo "⚠️  Deployment Guard: $1 — Deployment wird ohne Bewertung fortgesetzt (fail-open). Strenger: fail-open: 'false'."
+    printf '⚠️  Deployment Guard: %s — Deployment wird ohne Bewertung fortgesetzt (fail-open). Strenger: fail-open: '"'"'false'"'"'.\n' "$1" | sanitize
     print_body
     exit 0
   fi
-  echo "❌ Deployment Guard: $1 — Deployment wird gestoppt (fail-open ist deaktiviert)." >&2
+  printf '❌ Deployment Guard: %s — Deployment wird gestoppt (fail-open ist deaktiviert).\n' "$1" | sanitize >&2
   echo "   Wenn Ausfälle der API das Deployment nicht blockieren sollen: fail-open: 'true' setzen." >&2
   print_body
   exit 1
@@ -434,19 +498,17 @@ fi
 case "$HTTP_CODE" in
   200) ;;
   401|403)
-    echo "❌ Deployment Guard: API Key ungültig oder ohne Berechtigung (HTTP ${HTTP_CODE})." >&2
-    print_body
-    exit 1 ;;
+    hard_fail "API Key ungültig oder ohne Berechtigung (HTTP ${HTTP_CODE})" ;;
   400|422)
-    echo "❌ Deployment Guard: Anfrage abgelehnt (HTTP ${HTTP_CODE}) — Eingaben prüfen." >&2
-    print_body
-    exit 1 ;;
+    hard_fail "Anfrage abgelehnt (HTTP ${HTTP_CODE}) — Eingaben prüfen" ;;
   429)
     soft_fail "Analyse-Limit erreicht (HTTP 429)" ;;
-  5??)
+  5[0-9][0-9])
     soft_fail "API-Fehler (HTTP ${HTTP_CODE})" ;;
+  3[0-9][0-9])
+    hard_fail "API antwortet mit Redirect (HTTP ${HTTP_CODE}) — wird nicht verfolgt; api-url prüfen" ;;
   *)
-    soft_fail "Unerwartete API-Antwort (HTTP ${HTTP_CODE})" ;;
+    hard_fail "Unerwarteter HTTP-Status ${HTTP_CODE:0:3} — api-url, Proxy und Abo prüfen" ;;
 esac
 
 # ── Antwort parsen (jq) ──────────────────────────────────────────────────
