@@ -1,9 +1,15 @@
+# Monatlich, ein gebuendelter PR je Oekosystem. Sicherheitsupdates kommen
+# unabhaengig davon sofort (Dependabot security updates / Alerts).
+# cooldown: neue Versionen erst nach 7 Tagen vorschlagen (Schutz vor
+# kompromittierten Releases, die meist innerhalb weniger Tage entfernt werden).
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ['*']
