@@ -46,8 +46,10 @@ Each run sends one JSON request to `<api-url>/analyze`. It contains:
 - finding counts from Trivy, Semgrep and Checkov (when passed in)
 - incident counts for the last 7 / 30 days (when passed in)
 - repo type indicators (Dockerfile, Python/Node dependencies, Terraform, `setup.py` present: yes/no)
+- since v1.9.0, git metrics as plain numbers: number of touched directories, spread of the change, number of people and commits that changed these files in the last year, previous commits of the author, reverts and hotfixes in the last 7 / 30 days
+- since v1.9.0, the SHAs of commits this push reverts via `git revert`, and whether the push is a hotfix (commit subject starts with `hotfix`). This measures how accurate earlier scores were.
 
-Not transmitted: source code, diff contents, file contents, commit messages.
+Not transmitted: source code, diff contents, file contents, commit messages, names, email addresses. Git metrics are computed on the runner; with a shallow clone they are not sent.
 
 The risk score is a **deterministic formula** — same input, same result. No language model takes part in the calculation. The explanation text is generated afterwards by an OpenAI language model from the computed factors and the changed file paths; it does not change the score.
 
@@ -214,7 +216,7 @@ Detected automatically in:
 - `go.mod` — `/vX` module paths compared
 
 ### Incident history
-**Not** detected automatically — pass it yourself:
+**Not** detected automatically for the current score (1.0) — pass it yourself. Since v1.9.0 the action also counts reverts and hotfixes of the last 7 / 30 days from the git history; the upcoming score version 2.0 uses the higher of both values:
 
 ```yaml
 - name: Deployment Guard

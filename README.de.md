@@ -46,8 +46,10 @@ Pro Lauf geht eine JSON-Anfrage an `<api-url>/analyze`. Sie enthält:
 - Trefferzahlen aus Trivy, Semgrep und Checkov (sofern übergeben)
 - Anzahl der Produktionsvorfälle der letzten 7 / 30 Tage (sofern übergeben)
 - Repo-Typ-Indikatoren (Dockerfile, Python-/Node-Dependencies, Terraform, `setup.py` vorhanden: ja/nein)
+- ab v1.9.0 Git-Kennzahlen als reine Zahlen: Anzahl betroffener Verzeichnisse, Streuung der Änderung, Anzahl der Personen und Commits, die diese Dateien im letzten Jahr geändert haben, bisherige Commits des Autors, Reverts und Hotfixes der letzten 7 / 30 Tage
+- ab v1.9.0 die SHAs der Commits, die dieser Push per `git revert` rückgängig macht, und ob der Push ein Hotfix ist (Commit-Betreff beginnt mit `hotfix`). Damit wird gemessen, wie treffsicher frühere Scores waren.
 
-Nicht übertragen werden Quellcode, Diff-Inhalte, Dateiinhalte und Commit-Messages.
+Nicht übertragen werden Quellcode, Diff-Inhalte, Dateiinhalte, Commit-Messages, Namen und E-Mail-Adressen. Die Git-Kennzahlen werden auf dem Runner berechnet; bei einem flachen Clone werden sie nicht gesendet.
 
 Der Risk Score ist eine **deterministische Formel** — gleiche Eingabe, gleiches Ergebnis. Kein Sprachmodell ist an der Berechnung beteiligt. Den Erklärungstext erzeugt anschließend ein Sprachmodell von OpenAI aus den berechneten Faktoren und den geänderten Dateipfaden; auf den Score hat er keinen Einfluss.
 
@@ -214,7 +216,7 @@ Erkennt Major-Upgrades automatisch in:
 - `go.mod` — `/vX` Module-Pfade verglichen
 
 ### Fehlerhistorie
-Wird **nicht** automatisch erkannt — muss manuell übergeben werden:
+Für den aktuellen Score (1.0) **nicht** automatisch erkannt — manuell übergeben. Ab v1.9.0 zählt die Action zusätzlich Reverts und Hotfixes der letzten 7 / 30 Tage aus der Git-Historie; die kommende Score-Version 2.0 nutzt davon den höheren Wert:
 
 ```yaml
 - name: Deployment Guard

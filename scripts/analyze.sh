@@ -347,9 +347,82 @@ PATHS_COUNT=$(jq 'length' "$PATHS_FILE")
 PATHS_PREVIEW=$(jq -r '.[:20] | join(",")' "$PATHS_FILE")
 [ "$PATHS_COUNT" -gt 20 ] && PATHS_PREVIEW="${PATHS_PREVIEW},… (${PATHS_COUNT} gesamt)"
 
+# ── Phase 6 — Git-Prozessmetriken (Score 2.0) ────────────────────────────
+# Werden lokal aus der Git-Historie berechnet. An die API gehen nur Zahlen und
+# die SHAs rückgängig gemachter Commits — keine Namen, Adressen oder Nachrichten.
+# Flacher Clone oder erster Commit: nichts senden (null), statt falscher Nullen.
+PM_AVAILABLE="false"
+PM_SUBSYS=null; PM_DIRS=null; PM_ENTROPY=null; PM_DEVS=null; PM_PRIOR=null; PM_AUTHOR=null
+REV7=null; REV30=null; HOT7=null; HOT30=null
+IS_HOTFIX="false"
+HOTFIX_RE='^(hotfix|hot-fix|\[hotfix\])'
+new_tmp REVERTED_FILE
+echo '[]' > "$REVERTED_FILE"
+
+# Teure git-Abfragen in großen Repos begrenzen (timeout fehlt z. B. auf macOS)
+with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then timeout 20 "$@"; else "$@"; fi
+}
+# Werte über 1.000.000 lehnt die API ab — kappen statt die Analyse scheitern zu lassen
+cap() { awk '{ v = $1 + 0; print (v > 1000000 ? 1000000 : v) }'; }
+
+if [ "$IS_SHALLOW" = "false" ] && commit_exists "$DIFF_BASE"; then
+  PM_SUBSYS=0; PM_DIRS=0; PM_ENTROPY=0; PM_DEVS=0; PM_PRIOR=0; PM_AUTHOR=0
+  if [ "$FILES" -gt 0 ]; then
+    # Zeilenumbrüche in Dateinamen ersetzen, damit jede Datei genau eine Zeile ist
+    PM_SUBSYS=$(printf '%s\n' "${CHANGED_FILES[@]//$'\n'/ }" | awk -F/ '{ print (NF > 1 ? $1 : ".") }' | sort -u | wc -l | cap)
+    PM_DIRS=$(printf '%s\n' "${CHANGED_FILES[@]//$'\n'/ }" | awk '{ if (sub(/\/[^\/]*$/, "")) print; else print "." }' | sort -u | wc -l | cap)
+    # Streuung: normierte Entropie der geänderten Zeilen über die Dateien (0–100)
+    PM_ENTROPY=$(printf '%s\n' "$NUMSTAT" | awk -F '\t' '
+      NF >= 3 { n = ($1 == "-") ? 1 : $1 + $2; if (n < 1) n = 1; c[++k] = n; t += n }
+      END {
+        if (k < 2 || t == 0) { print 0; exit }
+        h = 0; for (i = 1; i <= k; i++) { p = c[i] / t; h -= p * log(p) }
+        v = int(h / log(k) * 100 + 0.5); if (v > 100) v = 100; print v
+      }')
+    # Personen und Commits auf diesen Dateien im letzten Jahr (vor der Diff-Basis), max. 200 Dateien
+    PM_FILES=("${CHANGED_FILES[@]:0:200}")
+    new_tmp HIST_FILE
+    if with_timeout git --literal-pathspecs log --no-merges --since="1 year ago" --format='%H %ae' "$DIFF_BASE" -- "${PM_FILES[@]}" > "$HIST_FILE" 2>/dev/null; then
+      PM_PRIOR=$(cut -d' ' -f1 "$HIST_FILE" | sort -u | grep -c . | cap || true)
+      PM_DEVS=$(cut -d' ' -f2- "$HIST_FILE" | tr '[:upper:]' '[:lower:]' | sort -u | grep -c . | cap || true)
+    else
+      echo "  [guard] WARNING: Git-Historie zu groß oder nicht lesbar — Prozessmetriken werden nicht gesendet."
+      HIST_FAILED=1
+    fi
+  fi
+  # Erfahrung: bisherige Commits des Autors von HEAD im Repo (max. 20.000 durchsucht)
+  AUTHOR_EMAIL=$(git log -1 --format=%ae HEAD 2>/dev/null | tr '[:upper:]' '[:lower:]')
+  if [ -n "$AUTHOR_EMAIL" ]; then
+    PM_AUTHOR=$(with_timeout git log --no-merges -n 20000 --format=%ae "$DIFF_BASE" 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -cxF -- "$AUTHOR_EMAIL" || true)
+  fi
+  # Fehlerhistorie aus Git: Reverts und Hotfixes der letzten 7/30 Tage
+  REV7=$(git log --since="7 days ago" -F --grep='This reverts commit' --format=%H HEAD 2>/dev/null | grep -c . || true)
+  REV30=$(git log --since="30 days ago" -F --grep='This reverts commit' --format=%H HEAD 2>/dev/null | grep -c . || true)
+  HOT7=$(git log --no-merges --since="7 days ago" --format=%s HEAD 2>/dev/null | grep -ciE "$HOTFIX_RE" || true)
+  HOT30=$(git log --no-merges --since="30 days ago" --format=%s HEAD 2>/dev/null | grep -ciE "$HOTFIX_RE" || true)
+  # Ergebnis früherer Deployments: welche Commits macht dieser Push rückgängig?
+  git log --format=%B "${DIFF_BASE}..HEAD" 2>/dev/null \
+    | grep -oE 'This reverts commit [0-9a-f]{7,40}' | awk '{ print $4 }' | sort -u | head -20 \
+    | jq -R . | jq -s . > "$REVERTED_FILE" || echo '[]' > "$REVERTED_FILE"
+  if git log --no-merges --format=%s "${DIFF_BASE}..HEAD" 2>/dev/null | grep -qiE "$HOTFIX_RE"; then
+    IS_HOTFIX="true"
+  fi
+  PM_AVAILABLE="true"
+  if [ "${HIST_FAILED:-0}" = "1" ]; then
+    PM_AVAILABLE="false"
+    PM_SUBSYS=null; PM_DIRS=null; PM_ENTROPY=null; PM_DEVS=null; PM_PRIOR=null; PM_AUTHOR=null
+  fi
+fi
+EVENT_NAME=$(printf '%s' "${GITHUB_EVENT_NAME:-}" | tr -cd 'a-z_' | head -c 40)
+REVERTED_COUNT=$(jq 'length' "$REVERTED_FILE")
+
 # Alle Zähler sind intern berechnet — trotzdem prüfen, bevor sie als JSON-Zahl gehen
-for v in "$ADDED" "$REMOVED" "$FILES" "$BINARY_FILES" "$K8S" "$HELM_VALUES" "$DEP_FILES" "$MAJOR_BUMPS"; do
+for v in "$ADDED" "$REMOVED" "$FILES" "$BINARY_FILES" "$K8S" "$HELM_VALUES" "$DEP_FILES" "$MAJOR_BUMPS" "$REVERTED_COUNT"; do
   [[ "$v" =~ ^[0-9]+$ ]] || die "Interner Fehler: ungültiger Zählerwert '${v}'."
+done
+for v in "$PM_SUBSYS" "$PM_DIRS" "$PM_ENTROPY" "$PM_DEVS" "$PM_PRIOR" "$PM_AUTHOR" "$REV7" "$REV30" "$HOT7" "$HOT30"; do
+  [[ "$v" =~ ^[0-9]{1,9}$ || "$v" = "null" ]] || die "Interner Fehler: ungültiger Prozesswert '${v}'."
 done
 
 # ── Debug Output ─────────────────────────────────────────────────────────
@@ -381,6 +454,9 @@ echo "  [guard] has_python_deps:      ${HAS_PYTHON_DEPS}"
 echo "  [guard] has_node_deps:        ${HAS_NODE_DEPS}"
 echo "  [guard] has_terraform:        ${HAS_TERRAFORM}"
 echo "  [guard] has_setup_py:         ${HAS_SETUP_PY}"
+echo "  [guard] git_metrics:          ${PM_AVAILABLE} (subsystems ${PM_SUBSYS}, dirs ${PM_DIRS}, entropy ${PM_ENTROPY}, developers ${PM_DEVS}, prior_changes ${PM_PRIOR}, author_commits ${PM_AUTHOR})"
+echo "  [guard] reverts_7d/30d:       ${REV7}/${REV30}  hotfixes_7d/30d: ${HOT7}/${HOT30}"
+echo "  [guard] reverts_in_push:      ${REVERTED_COUNT}  is_hotfix: ${IS_HOTFIX}"
 
 # ── Payload bauen (jq, keine String-Interpolation) ───────────────────────
 new_tmp PAYLOAD_FILE
@@ -412,6 +488,19 @@ jq -n \
   --argjson has_node_deps             "$HAS_NODE_DEPS" \
   --argjson has_terraform             "$HAS_TERRAFORM" \
   --argjson has_setup_py              "$HAS_SETUP_PY" \
+  --argjson pm_subsystems             "$PM_SUBSYS" \
+  --argjson pm_directories            "$PM_DIRS" \
+  --argjson pm_entropy_pct            "$PM_ENTROPY" \
+  --argjson pm_developers             "$PM_DEVS" \
+  --argjson pm_prior_changes          "$PM_PRIOR" \
+  --argjson pm_author_commits         "$PM_AUTHOR" \
+  --argjson reverts_7d                "$REV7" \
+  --argjson reverts_30d               "$REV30" \
+  --argjson hotfixes_7d               "$HOT7" \
+  --argjson hotfixes_30d              "$HOT30" \
+  --slurpfile reverted_shas           "$REVERTED_FILE" \
+  --argjson is_hotfix                 "$IS_HOTFIX" \
+  --arg     event_name                "$EVENT_NAME" \
   '{
     repo: $repo,
     branch: $branch,
@@ -439,7 +528,20 @@ jq -n \
     has_python_deps: $has_python_deps,
     has_node_deps: $has_node_deps,
     has_terraform: $has_terraform,
-    has_setup_py: $has_setup_py
+    has_setup_py: $has_setup_py,
+    pm_subsystems: $pm_subsystems,
+    pm_directories: $pm_directories,
+    pm_entropy_pct: $pm_entropy_pct,
+    pm_developers: $pm_developers,
+    pm_prior_changes: $pm_prior_changes,
+    pm_author_commits: $pm_author_commits,
+    reverts_7d: $reverts_7d,
+    reverts_30d: $reverts_30d,
+    hotfixes_7d: $hotfixes_7d,
+    hotfixes_30d: $hotfixes_30d,
+    reverted_shas: $reverted_shas[0],
+    is_hotfix: $is_hotfix,
+    event_name: $event_name
   }' > "$PAYLOAD_FILE" || die "Payload konnte nicht erzeugt werden."
 
 # ── Fehlerbehandlung: fail-open vs. fail-closed ──────────────────────────
