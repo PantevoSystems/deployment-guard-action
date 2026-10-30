@@ -833,7 +833,7 @@ if [ -n "$GATE_DECISION" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
     echo "### 🛡️ Deployment Guard: ${GATE_TEXT}"
     echo ""
-    echo "Score **${SCORE}/100** · Status **${STATUS}** · Entscheidung \`${GATE_DECISION}\`"
+    echo "Entscheidung \`${GATE_DECISION}\` · Risiko-Score **${SCORE}/100** (${STATUS})"
     echo ""
     echo '```text'
     printf '%s\n' "$GATE_REASONS" | sanitize | tr -d '`'
@@ -841,6 +841,13 @@ if [ -n "$GATE_DECISION" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo '```'
   } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 fi
+
+# Ergebnis der Freigabe-Prüfung als eigene Zeile in der Job-Zusammenfassung,
+# damit ein roter Check nicht neben einem grünen Score-Status unerklärt bleibt.
+summary_result() {  # $1 = Text (nur feste Texte und Zahlen, keine Eingaben aus dem PR)
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] || return 0
+  { echo ""; echo "$1"; } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+}
 
 # Label am Pull Request setzen (alte dg:*-Labels wurden schon vor der API-Anfrage entfernt)
 if [ -n "$GATE_LABEL" ] && [ "$GH_PR_READY" = "true" ] && [ "$LABEL_PR" = "true" ]; then
@@ -875,6 +882,7 @@ gh_get_pages() {  # $1 = URL ohne page-Parameter, $2 = Zieldatei (JSON-Array all
 if [ "$ENFORCE_REVIEWS" = "true" ] && [[ "${GITHUB_EVENT_NAME:-}" == pull_request* ]]; then
   if [ "$GH_PR_READY" != "true" ]; then
     echo "❌ enforce-reviews: GitHub-API nicht nutzbar (Token, PR-Nummer oder API-URL fehlt)."
+    summary_result "**❌ Check fehlgeschlagen:** Freigaben nicht prüfbar (Token oder PR-Daten fehlen)."
     exit 1
   fi
   case "$GATE_DECISION" in
@@ -883,14 +891,17 @@ if [ "$ENFORCE_REVIEWS" = "true" ] && [[ "${GITHUB_EVENT_NAME:-}" == pull_reques
     two_reviewers) REQUIRED_APPROVALS=2 ;;
     blocked)
       echo "❌ Freigabe-Regel: blockiert (enforce-reviews, unabhängig von fail-on-blocked)."
+      summary_result "**❌ Check fehlgeschlagen:** Die Freigabe-Regel blockiert diese Änderung. Freigaben heben das nicht auf."
       exit 1 ;;
     *)
       echo "❌ enforce-reviews: keine Freigabe-Entscheidung von der API erhalten (Backend zu alt?) — Check schlägt fehl."
+      summary_result "**❌ Check fehlgeschlagen:** Keine Freigabe-Entscheidung erhalten."
       exit 1 ;;
   esac
   if [ "$REQUIRED_APPROVALS" -gt 0 ]; then
     if ! [[ "${GITHUB_PR_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
       echo "❌ enforce-reviews: Head-Commit des Pull Requests unbekannt — Freigaben nicht prüfbar."
+      summary_result "**❌ Check fehlgeschlagen:** Freigaben nicht prüfbar (Commit unbekannt)."
       exit 1
     fi
     PR_API="${GH_API%/}/repos/${GITHUB_REPO}/pulls/${GITHUB_PR_NUMBER}"
@@ -899,6 +910,7 @@ if [ "$ENFORCE_REVIEWS" = "true" ] && [[ "${GITHUB_EVENT_NAME:-}" == pull_reques
     if ! gh_get_pages "${PR_API}/reviews?per_page=100" "$REVIEWS_FILE" \
        || ! gh_get_pages "${PR_API}/commits?per_page=100" "$PR_COMMITS_FILE"; then
       echo "❌ enforce-reviews: Reviews oder Commits konnten nicht gelesen werden — Check schlägt sicherheitshalber fehl."
+      summary_result "**❌ Check fehlgeschlagen:** Reviews konnten nicht gelesen werden. Erneut ausführen."
       exit 1
     fi
     PR_AUTHOR_LC=$(printf '%s' "${GITHUB_PR_AUTHOR:-}" | tr '[:upper:]' '[:lower:]')
@@ -925,9 +937,11 @@ if [ "$ENFORCE_REVIEWS" = "true" ] && [[ "${GITHUB_EVENT_NAME:-}" == pull_reques
     if [ "$APPROVALS" -lt "$REQUIRED_APPROVALS" ]; then
       echo "❌ Freigabe-Regel verlangt ${REQUIRED_APPROVALS} Freigabe(n) für den aktuellen Commit von Personen mit Schreibrecht, vorhanden: ${APPROVALS}."
       echo "   Nicht gezählt: PR-Autor, Commit-Autoren des PRs, Bots, Freigaben älterer Commits."
+      summary_result "**❌ Freigaben: ${APPROVALS} von ${REQUIRED_APPROVALS}.** Der Check wird grün, sobald genug Personen mit Schreibrecht den aktuellen Commit freigeben. Nicht gezählt: PR-Autor, Commit-Autoren dieses PRs, Bots, Freigaben älterer Commits."
       exit 1
     fi
     echo "✅ ${APPROVALS} von ${REQUIRED_APPROVALS} nötigen Freigabe(n) vorhanden."
+    summary_result "**✅ Freigaben: ${APPROVALS} von ${REQUIRED_APPROVALS}.**"
   fi
 fi
 

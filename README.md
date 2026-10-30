@@ -98,6 +98,7 @@ jobs:
 With `enforce-reviews: 'true'` the check fails until the required approvals (1 for `review`, 2 for `two_reviewers`) exist **on the current commit**. Only people with write access count; the PR author, commit authors of the PR and bots do not. `blocked` always fails. The check re-runs on every review, and API outages fail it (no fail-open on pull requests). Make the check **required** in branch protection.
 
 Limits you should know:
+- Without a required check in branch protection the gate is only a signal: the merge button stays active despite a red check. For **private** repositories, GitHub offers branch protection and rulesets only on paid plans (Pro, Team, Enterprise); public repositories get them on the Free plan too.
 - A pull request can change the workflow that runs the gate. Protect `.github/workflows/**` with CODEOWNERS and "Require review from Code Owners", or run the gate as a required workflow via repository/organization rulesets. Without that, the gate is a strong default, not a hard boundary.
 - On direct pushes only `blocked` stops the run. Use branch protection so changes reach the default branch through pull requests.
 - Pull requests from forks get no secrets, so the step fails with a missing API key.

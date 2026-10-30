@@ -98,6 +98,7 @@ jobs:
 Mit `enforce-reviews: 'true'` schlägt der Check fehl, bis die nötigen Freigaben (1 bei `review`, 2 bei `two_reviewers`) **für den aktuellen Commit** vorliegen. Es zählen nur Personen mit Schreibrecht, nicht der PR-Autor, nicht die Commit-Autoren des PRs und keine Bots. `blocked` schlägt immer fehl. Der Check läuft bei jedem Review neu, API-Ausfälle lassen ihn scheitern (kein fail-open bei Pull Requests). Den Check im Branch-Schutz als **Pflicht** markieren.
 
 Grenzen, die du kennen solltest:
+- Ohne Pflicht-Check im Branch-Schutz ist das Gate nur eine Anzeige: Der Merge-Button bleibt trotz rotem Check aktiv. In **privaten** Repos gibt es Branch-Schutz und Rulesets bei GitHub erst ab einem bezahlten Plan (Pro, Team, Enterprise), in öffentlichen Repos auch im Free-Plan.
 - Ein Pull Request kann den Workflow ändern, der das Gate ausführt. `.github/workflows/**` per CODEOWNERS mit „Require review from Code Owners“ schützen oder das Gate über Repository- bzw. Organisations-Rulesets als Pflicht-Workflow einbinden. Ohne das ist das Gate eine starke Voreinstellung, keine harte Grenze.
 - Bei direkten Pushes stoppt nur `blocked`. Per Branch-Schutz sicherstellen, dass Änderungen über Pull Requests in den Default-Branch kommen.
 - Pull Requests aus Forks bekommen keine Secrets, der Schritt scheitert dann am fehlenden API Key.
