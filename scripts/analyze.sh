@@ -546,12 +546,20 @@ echo "  [guard] gate_policy:          $([ "$POLICY_PRESENT" = "true" ] && echo "
 [ -n "$POLICY_NOTE" ] && echo "  [guard] gate_note:            ${POLICY_NOTE}"
 echo "  [guard] agents_detected:      $(jq -r 'if length == 0 then "keine" else join(", ") end' "$AGENTS_FILE")"
 
+# Bei Pull Requests ist GITHUB_SHA der temporaere Merge-Commit, der sich bei jedem
+# Neuaufbau aendert. Fuer Dashboard-Link und Zaehlung (Wiederholung = gleicher Commit)
+# den Head-Commit des PRs senden.
+COMMIT_SHA="${GITHUB_SHA:-}"
+if [[ "${GITHUB_EVENT_NAME:-}" == pull_request* ]] && [[ "${GITHUB_PR_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
+  COMMIT_SHA="$GITHUB_PR_HEAD_SHA"
+fi
+
 # ── Payload bauen (jq, keine String-Interpolation) ───────────────────────
 new_tmp PAYLOAD_FILE
 jq -n \
   --arg     repo                      "${GITHUB_REPO:-}" \
   --arg     branch                    "${GITHUB_BRANCH:-}" \
-  --arg     commit_sha                "${GITHUB_SHA:-}" \
+  --arg     commit_sha                "${COMMIT_SHA}" \
   --argjson diff_lines_added          "$ADDED" \
   --argjson diff_lines_removed        "$REMOVED" \
   --argjson diff_files_changed        "$FILES" \
@@ -795,7 +803,7 @@ echo "🛡️  Deployment Guard — Risk Analysis"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 printf '  Repo:    %s\n' "${GITHUB_REPO:-}" | sanitize
 printf '  Branch:  %s\n' "${GITHUB_BRANCH:-}" | sanitize
-printf '  Commit:  %s\n' "${GITHUB_SHA:0:7}"
+printf '  Commit:  %s\n' "${COMMIT_SHA:0:7}"
 echo "  ─────────────────────────────────────"
 printf '  Score:   %s / 100\n' "$SCORE"
 printf '  Verdict: %s\n' "$VERDICT" | sanitize
