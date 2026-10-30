@@ -49,11 +49,83 @@ Each run sends one JSON request to `<api-url>/analyze`. It contains:
 - since v1.9.0, git metrics as plain numbers: number of touched directories, spread of the change, number of people and commits that changed these files in the last year, previous commits of the author, reverts and hotfixes in the last 7 / 30 days
 - since v1.9.0, the SHAs of commits this push reverts via `git revert`, and whether the push is a hotfix (commit subject starts with `hotfix`). This measures how accurate earlier scores were.
 
+- since v1.10.0, the policy file `.github/deployment-guard.yml` (from the base commit) and the names of detected AI agents from a fixed list
+
 Not transmitted: source code, diff contents, file contents, commit messages, names, email addresses. Git metrics are computed on the runner; with a shallow clone they are not sent.
 
 The risk score is a **deterministic formula** — same input, same result. No language model takes part in the calculation. The explanation text is generated afterwards by an OpenAI language model from the computed factors and the changed file paths; it does not change the score.
 
 ---
+
+## Release gate for AI-generated changes
+
+AI agents now open a large share of pull requests. The gate decides **by fixed rules** what may go in automatically, who has to review, and what is blocked. No language model takes part in the decision, and no source code leaves the pipeline.
+
+| Decision | Label | Meaning |
+|---|---|---|
+| `auto_ok` | `dg:auto-ok` | No rule triggered |
+| `review` | `dg:review` | One person reviews |
+| `two_reviewers` | `dg:two-reviewers` | Two people review (migrations, auth, CI, infrastructure, ...) |
+| `blocked` | `dg:blocked` | The step fails (with `fail-on-blocked: 'true'`) |
+
+Every decision comes with reasons in the log and in the job summary. Changes detected as coming from AI agents (Copilot, Claude, Cursor, Devin, Codex, Jules, OpenHands, Aider, Amazon Q; based on commit authors, co-author trailers and the PR author) need at least one review by default. Detection is a heuristic: it adds strictness for agents, it is not a security boundary.
+
+```yaml
+on:
+  pull_request:
+  pull_request_review:
+    types: [submitted, dismissed]
+permissions:
+  contents: read
+  pull-requests: write   # label + reading reviews
+concurrency:
+  group: dg-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: PantevoSystems/deployment-guard-action@v1
+        with:
+          api-key: ${{ secrets.GUARD_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          enforce-reviews: 'true'
+```
+
+With `enforce-reviews: 'true'` the check fails until the required approvals (1 for `review`, 2 for `two_reviewers`) exist **on the current commit**. Only people with write access count; the PR author, commit authors of the PR and bots do not. `blocked` always fails. The check re-runs on every review, and API outages fail it (no fail-open on pull requests). Make the check **required** in branch protection.
+
+Limits you should know:
+- A pull request can change the workflow that runs the gate. Protect `.github/workflows/**` with CODEOWNERS and "Require review from Code Owners", or run the gate as a required workflow via repository/organization rulesets. Without that, the gate is a strong default, not a hard boundary.
+- On direct pushes only `blocked` stops the run. Use branch protection so changes reach the default branch through pull requests.
+- Pull requests from forks get no secrets, so the step fails with a missing API key.
+
+Without `enforce-reviews`, labels and outputs are information only: branch protection cannot require reviews based on labels.
+
+Optional policy file `.github/deployment-guard.yml` (all keys optional, unknown keys are rejected):
+
+```yaml
+version: 1
+max_lines_auto: 400          # larger changes need a review
+major_bump: review           # auto_ok | review | two_reviewers | blocked
+paths:
+  blocked: ["secrets/**"]
+  two_reviewers: ["**/migrations/**", ".github/workflows/**", "**/*.tf"]
+  review: ["**/package.json"]
+  auto_ok_only: ["docs/**"]  # changes only here skip the size limit
+agent:
+  auto_ok: false             # detected agent changes need a review
+  max_lines_auto: 200
+score:
+  review_at: 30
+  two_reviewers_at: 50
+```
+
+The policy is read from the **base commit** (for tag, release and manual runs from the default branch). A change to the policy cannot loosen its own rules, and the gate requires two reviewers for it. An invalid policy falls back to the defaults and the decision is at least `two_reviewers`. Renames count as delete plus add, so moving files out of protected paths is detected.
+
+`gate-reasons` contains file names from the pull request. Use it only through `env:`, never directly inside `run:`.
 
 ## Full example
 
@@ -143,6 +215,10 @@ Templates: [PantevoSystems/pipeline-security-templates](https://github.com/Pante
 | `checkov-failed-checks` | Failed Checkov checks | ❌ | `0` |
 | `checkov-critical-failures` | CRITICAL Checkov failures | ❌ | `0` |
 | `diff-changed-paths` | Comma-separated list of changed paths (overrides auto-detection) | ❌ | — |
+| `policy-file` | Gate policy, read from the base commit | ❌ | `.github/deployment-guard.yml` |
+| `github-token` | Token to set the `dg:*` label on pull requests (`pull-requests: write`) | ❌ | — |
+| `label-pr` | Set the label when a token is given | ❌ | `true` |
+| `enforce-reviews` | Fail until required approvals exist on the current commit (needs `github-token`) | ❌ | `false` |
 
 All count inputs must be non-negative integers — anything else fails the step.
 
@@ -175,6 +251,8 @@ Deployment Guard is an advisory gate: an outage of our API (network, timeout, 42
 | `verdict` | LOW RISK / MEDIUM RISK / HIGH RISK / CRITICAL RISK |
 | `status` | PASS / WARN / BLOCKED |
 | `explanation` | Plain-language explanation of the score |
+| `gate-decision` | `auto_ok` / `review` / `two_reviewers` / `blocked` |
+| `gate-reasons` | Reasons for the gate decision, one per line |
 
 ---
 

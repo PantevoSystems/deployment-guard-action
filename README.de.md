@@ -49,11 +49,83 @@ Pro Lauf geht eine JSON-Anfrage an `<api-url>/analyze`. Sie enthält:
 - ab v1.9.0 Git-Kennzahlen als reine Zahlen: Anzahl betroffener Verzeichnisse, Streuung der Änderung, Anzahl der Personen und Commits, die diese Dateien im letzten Jahr geändert haben, bisherige Commits des Autors, Reverts und Hotfixes der letzten 7 / 30 Tage
 - ab v1.9.0 die SHAs der Commits, die dieser Push per `git revert` rückgängig macht, und ob der Push ein Hotfix ist (Commit-Betreff beginnt mit `hotfix`). Damit wird gemessen, wie treffsicher frühere Scores waren.
 
+- ab v1.10.0 die Policy-Datei `.github/deployment-guard.yml` (vom Basis-Commit) und die Namen erkannter KI-Agenten aus einer festen Liste
+
 Nicht übertragen werden Quellcode, Diff-Inhalte, Dateiinhalte, Commit-Messages, Namen und E-Mail-Adressen. Die Git-Kennzahlen werden auf dem Runner berechnet; bei einem flachen Clone werden sie nicht gesendet.
 
 Der Risk Score ist eine **deterministische Formel** — gleiche Eingabe, gleiches Ergebnis. Kein Sprachmodell ist an der Berechnung beteiligt. Den Erklärungstext erzeugt anschließend ein Sprachmodell von OpenAI aus den berechneten Faktoren und den geänderten Dateipfaden; auf den Score hat er keinen Einfluss.
 
 ---
+
+## Freigabe-Gate für KI-generierte Änderungen
+
+KI-Agenten öffnen inzwischen einen großen Teil der Pull Requests. Das Gate entscheidet **nach festen Regeln**, was automatisch rein darf, wer prüfen muss und was blockiert wird. Kein Sprachmodell entscheidet mit, kein Quellcode verlässt die Pipeline.
+
+| Entscheidung | Label | Bedeutung |
+|---|---|---|
+| `auto_ok` | `dg:auto-ok` | Keine Regel ausgelöst |
+| `review` | `dg:review` | Eine Person prüft |
+| `two_reviewers` | `dg:two-reviewers` | Zwei Personen prüfen (Migrationen, Auth, CI, Infrastruktur, …) |
+| `blocked` | `dg:blocked` | Der Schritt schlägt fehl (bei `fail-on-blocked: 'true'`) |
+
+Jede Entscheidung steht mit Begründung im Log und in der Job-Zusammenfassung. Änderungen, die als Arbeit eines KI-Agenten erkannt werden (Copilot, Claude, Cursor, Devin, Codex, Jules, OpenHands, Aider, Amazon Q; anhand von Commit-Autoren, Co-Author-Zeilen und PR-Autor), brauchen standardmäßig mindestens ein Review. Die Erkennung ist eine Heuristik: Sie macht Regeln für Agenten strenger, sie ist keine Sicherheitsgrenze.
+
+```yaml
+on:
+  pull_request:
+  pull_request_review:
+    types: [submitted, dismissed]
+permissions:
+  contents: read
+  pull-requests: write   # Label + Reviews lesen
+concurrency:
+  group: dg-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: PantevoSystems/deployment-guard-action@v1
+        with:
+          api-key: ${{ secrets.GUARD_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          enforce-reviews: 'true'
+```
+
+Mit `enforce-reviews: 'true'` schlägt der Check fehl, bis die nötigen Freigaben (1 bei `review`, 2 bei `two_reviewers`) **für den aktuellen Commit** vorliegen. Es zählen nur Personen mit Schreibrecht, nicht der PR-Autor, nicht die Commit-Autoren des PRs und keine Bots. `blocked` schlägt immer fehl. Der Check läuft bei jedem Review neu, API-Ausfälle lassen ihn scheitern (kein fail-open bei Pull Requests). Den Check im Branch-Schutz als **Pflicht** markieren.
+
+Grenzen, die du kennen solltest:
+- Ein Pull Request kann den Workflow ändern, der das Gate ausführt. `.github/workflows/**` per CODEOWNERS mit „Require review from Code Owners“ schützen oder das Gate über Repository- bzw. Organisations-Rulesets als Pflicht-Workflow einbinden. Ohne das ist das Gate eine starke Voreinstellung, keine harte Grenze.
+- Bei direkten Pushes stoppt nur `blocked`. Per Branch-Schutz sicherstellen, dass Änderungen über Pull Requests in den Default-Branch kommen.
+- Pull Requests aus Forks bekommen keine Secrets, der Schritt scheitert dann am fehlenden API Key.
+
+Ohne `enforce-reviews` sind Labels und Outputs nur Information: Branch-Schutz kann Reviews nicht abhängig von Labels verlangen.
+
+Optionale Policy-Datei `.github/deployment-guard.yml` (alle Angaben optional, unbekannte Schlüssel werden abgelehnt):
+
+```yaml
+version: 1
+max_lines_auto: 400          # größere Änderungen brauchen ein Review
+major_bump: review           # auto_ok | review | two_reviewers | blocked
+paths:
+  blocked: ["secrets/**"]
+  two_reviewers: ["**/migrations/**", ".github/workflows/**", "**/*.tf"]
+  review: ["**/package.json"]
+  auto_ok_only: ["docs/**"]  # nur hier geändert: kein Zeilenlimit
+agent:
+  auto_ok: false             # erkannte Agent-Änderungen brauchen ein Review
+  max_lines_auto: 200
+score:
+  review_at: 30
+  two_reviewers_at: 50
+```
+
+Die Policy wird vom **Basis-Commit** gelesen (bei Tag-, Release- und manuellen Läufen vom Default-Branch). Eine Änderung an der Policy kann ihre eigenen Regeln nicht lockern, das Gate verlangt dafür zwei Prüfer. Eine ungültige Policy fällt auf die Standardregeln zurück, die Entscheidung ist dann mindestens `two_reviewers`. Umbenennungen zählen als Löschen plus Anlegen, das Verschieben aus geschützten Pfaden wird also erkannt.
+
+`gate-reasons` enthält Dateinamen aus dem Pull Request. Nur über `env:` verwenden, nie direkt in `run:`.
 
 ## Vollständiges Beispiel
 
@@ -143,6 +215,10 @@ Templates: [PantevoSystems/pipeline-security-templates](https://github.com/Pante
 | `checkov-failed-checks` | Fehlgeschlagene Checkov-Checks | ❌ | `0` |
 | `checkov-critical-failures` | CRITICAL Checkov-Failures | ❌ | `0` |
 | `diff-changed-paths` | Komma-separierte Liste geänderter Pfade (überschreibt die automatische Erkennung) | ❌ | — |
+| `policy-file` | Gate-Policy, wird vom Basis-Commit gelesen | ❌ | `.github/deployment-guard.yml` |
+| `github-token` | Token, um das `dg:*`-Label am Pull Request zu setzen (`pull-requests: write`) | ❌ | — |
+| `label-pr` | Label setzen, wenn ein Token übergeben wird | ❌ | `true` |
+| `enforce-reviews` | Check scheitert, bis die nötigen Freigaben für den aktuellen Commit vorliegen (braucht `github-token`) | ❌ | `false` |
 
 Alle Zahlen-Inputs müssen nicht-negative ganze Zahlen sein — alles andere lässt den Schritt fehlschlagen.
 
@@ -175,6 +251,8 @@ Deployment Guard ist ein Advisory Gate: Ein Ausfall unserer API (Netzwerk, Timeo
 | `verdict` | LOW RISK / MEDIUM RISK / HIGH RISK / CRITICAL RISK |
 | `status` | PASS / WARN / BLOCKED |
 | `explanation` | Erklärung des Scores in verständlicher Sprache |
+| `gate-decision` | `auto_ok` / `review` / `two_reviewers` / `blocked` |
+| `gate-reasons` | Gründe der Entscheidung, eine pro Zeile |
 
 ---
 

@@ -93,6 +93,30 @@ case "$FAIL_ON_BLOCKED" in
   *) die "fail-on-blocked muss 'true' oder 'false' sein (erhalten: '${FAIL_ON_BLOCKED}')." ;;
 esac
 
+LABEL_PR="${LABEL_PR:-true}"
+case "$LABEL_PR" in
+  true|false) ;;
+  *) die "label-pr muss 'true' oder 'false' sein (erhalten: '${LABEL_PR}')." ;;
+esac
+POLICY_FILE="${POLICY_FILE:-.github/deployment-guard.yml}"
+POLICY_FILE="${POLICY_FILE#./}"
+ENFORCE_REVIEWS="${ENFORCE_REVIEWS:-false}"
+case "$ENFORCE_REVIEWS" in
+  true|false) ;;
+  *) die "enforce-reviews muss 'true' oder 'false' sein (erhalten: '${ENFORCE_REVIEWS}')." ;;
+esac
+if [ "$ENFORCE_REVIEWS" = "true" ] && [ -z "${GH_TOKEN_INPUT:-}" ]; then
+  die "enforce-reviews braucht github-token (z. B. secrets.GITHUB_TOKEN)."
+fi
+# Wer Freigaben erzwingt, darf bei API-Ausfall nicht durchlassen
+if [ "$ENFORCE_REVIEWS" = "true" ] && [[ "${GITHUB_EVENT_NAME:-}" == pull_request* ]] && [ "$FAIL_OPEN" = "true" ]; then
+  echo "  [guard] enforce-reviews aktiv: fail-open wird für diesen Pull-Request-Check abgeschaltet."
+  FAIL_OPEN="false"
+fi
+if ! [[ "$POLICY_FILE" =~ ^[A-Za-z0-9._/-]{1,200}$ ]] || [[ "$POLICY_FILE" == *..* ]] || [[ "$POLICY_FILE" == /* ]]; then
+  die "policy-file muss ein relativer Pfad ohne '..' sein (erhalten: '${POLICY_FILE}')."
+fi
+
 # API-URL kommt ausschließlich über den Input 'api-url' (env API_URL), nicht aus geerbten Variablen.
 API_URL="${API_URL:-https://api.pantevosystems.com}"
 API_URL="${API_URL%/}"
@@ -190,7 +214,7 @@ echo "  [guard] diff_base:            ${DIFF_BASE} (${BASE_SOURCE})"
 # setzen und die Zeilenzahlen auf 0 drücken. Deshalb alle Diffs mit leerem
 # Attribut-Baum: attr.tree (git >= 2.42) bzw. GIT_ATTR_SOURCE (git >= 2.40).
 gdiff() {
-  GIT_ATTR_SOURCE="$EMPTY_TREE" git -c attr.tree="$EMPTY_TREE" -c core.quotePath=false diff --no-ext-diff --no-textconv "$@"
+  GIT_ATTR_SOURCE="$EMPTY_TREE" git -c attr.tree="$EMPTY_TREE" -c core.quotePath=false diff --no-renames --no-ext-diff --no-textconv "$@"
 }
 GIT_VER=$(git version 2>/dev/null | sed -nE 's/^git version ([0-9]+)\.([0-9]+).*/\1 \2/p')
 read -r GIT_MAJ GIT_MIN <<< "${GIT_VER:-0 0}"
@@ -337,10 +361,10 @@ new_tmp PATHS_FILE
 if [ -n "${DIFF_CHANGED_PATHS:-}" ]; then
   # Override über Action-Input (komma-separiert)
   jq -n --arg s "$DIFF_CHANGED_PATHS" \
-    '$s | split(",") | map(select(length > 0)) | .[:500] | map(.[:300])' > "$PATHS_FILE" \
+    '$s | split(",") | map(select(length > 0)) | .[:500] | map(if length > 300 then "\u2026" + .[-299:] else . end)' > "$PATHS_FILE" \
     || die "diff-changed-paths konnte nicht verarbeitet werden."
 else
-  jq -Rs 'split("\u0000") | map(select(length > 0)) | .[:500] | map(.[:300])' < "$NAMES_FILE" > "$PATHS_FILE" \
+  jq -Rs 'split("\u0000") | map(select(length > 0)) | .[:500] | map(if length > 300 then "\u2026" + .[-299:] else . end)' < "$NAMES_FILE" > "$PATHS_FILE" \
     || die "Geänderte Pfade konnten nicht verarbeitet werden."
 fi
 PATHS_COUNT=$(jq 'length' "$PATHS_FILE")
@@ -417,6 +441,67 @@ fi
 EVENT_NAME=$(printf '%s' "${GITHUB_EVENT_NAME:-}" | tr -cd 'a-z_' | head -c 40)
 REVERTED_COUNT=$(jq 'length' "$REVERTED_FILE")
 
+# ── Phase 7 — Freigabe-Gate ──────────────────────────────────────────────
+# Policy vom BASIS-Commit lesen: Ein Pull Request kann seine eigenen Regeln nicht lockern.
+new_tmp POLICY_TMP
+POLICY_PRESENT="false"
+POLICY_UNAVAILABLE="false"
+POLICY_NOTE=""
+# Bei Fallback-Basis (HEAD~1: Tag, workflow_dispatch, Force-Push) stammt die Basis
+# evtl. vom Angreifer: dann die Policy vom Default-Branch lesen.
+POLICY_REF="$DIFF_BASE"
+if [ "$BASE_SOURCE" = "HEAD~1" ] || ! commit_exists "$DIFF_BASE"; then
+  DEFAULT_BRANCH=$(printf '%s' "${GITHUB_DEFAULT_BRANCH:-}" | tr -cd 'A-Za-z0-9._/-' | head -c 200)
+  if [ -n "$DEFAULT_BRANCH" ] && commit_exists "origin/${DEFAULT_BRANCH}"; then
+    POLICY_REF="origin/${DEFAULT_BRANCH}"
+  else
+    POLICY_REF=""
+    POLICY_NOTE="Keine vertrauenswürdige Basis für die Policy — Standardregeln, mindestens zwei Prüfer"
+    [ -f "$POLICY_FILE" ] && POLICY_UNAVAILABLE="true"
+  fi
+fi
+if [ -n "$POLICY_REF" ] && git cat-file -e "${POLICY_REF}:${POLICY_FILE}" 2>/dev/null; then
+  git show "${POLICY_REF}:${POLICY_FILE}" 2>/dev/null | head -c 8001 > "$POLICY_TMP" || : > "$POLICY_TMP"
+  if [ "$(wc -c < "$POLICY_TMP")" -gt 8000 ]; then
+    POLICY_NOTE="policy-file größer als 8 KB — Standardregeln"
+    : > "$POLICY_TMP"
+  else
+    POLICY_PRESENT="true"
+  fi
+elif [ -z "$POLICY_NOTE" ] && [ -f "$POLICY_FILE" ]; then
+  POLICY_NOTE="${POLICY_FILE} ist neu und gilt ab dem nächsten Push (wird vom Basis-Commit gelesen) — jetzt Standardregeln"
+fi
+
+# KI-Agenten erkennen: Autor, Co-authored-by und typische Signaturen der Commits.
+# Es werden nur Namen aus einer festen Liste gesendet, keine Personen oder Adressen.
+AGENT_TEXT=""
+if commit_exists "$DIFF_BASE"; then
+  AGENT_TEXT=$(git log --format='%an <%ae>%n%cn <%ce>%n%b' "${DIFF_BASE}..HEAD" 2>/dev/null | head -c 500000 | tr '[:upper:]' '[:lower:]' || true)
+else
+  AGENT_TEXT=$(git log -1 --format='%an <%ae>%n%cn <%ce>%n%b' HEAD 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
+fi
+PR_AUTHOR=$(printf '%s' "${GITHUB_PR_AUTHOR:-}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9[]-' | head -c 100)
+AGENT_TEXT="${AGENT_TEXT}"$'\n'"pr-author: ${PR_AUTHOR}"
+AGENTS=()
+detect_agent() {
+  if printf '%s' "$AGENT_TEXT" | grep -qE -- "$2"; then AGENTS+=("$1"); fi
+}
+detect_agent copilot   'copilot-swe-agent|\+copilot@users\.noreply\.github\.com|pr-author: copilot'
+detect_agent claude    'noreply@anthropic\.com|claude\[bot\]|co-authored-by: claude|generated with \[?claude code'
+detect_agent cursor    'cursoragent@cursor\.com|cursor\[bot\]|co-authored-by: cursor'
+detect_agent devin     'devin-ai-integration|devin\[bot\]'
+detect_agent codex     'chatgpt-codex-connector|codex\[bot\]|co-authored-by: codex'
+detect_agent jules     'google-labs-jules|jules\[bot\]'
+detect_agent openhands 'openhands'
+detect_agent aider     'co-authored-by: aider|aider\.chat'
+detect_agent amazon-q  'amazon-q-developer|amazon q developer'
+new_tmp AGENTS_FILE
+if [ "${#AGENTS[@]}" -gt 0 ]; then
+  printf '%s\n' "${AGENTS[@]}" | jq -R . | jq -s . > "$AGENTS_FILE"
+else
+  echo '[]' > "$AGENTS_FILE"
+fi
+
 # Alle Zähler sind intern berechnet — trotzdem prüfen, bevor sie als JSON-Zahl gehen
 for v in "$ADDED" "$REMOVED" "$FILES" "$BINARY_FILES" "$K8S" "$HELM_VALUES" "$DEP_FILES" "$MAJOR_BUMPS" "$REVERTED_COUNT"; do
   [[ "$v" =~ ^[0-9]+$ ]] || die "Interner Fehler: ungültiger Zählerwert '${v}'."
@@ -457,6 +542,9 @@ echo "  [guard] has_setup_py:         ${HAS_SETUP_PY}"
 echo "  [guard] git_metrics:          ${PM_AVAILABLE} (subsystems ${PM_SUBSYS}, dirs ${PM_DIRS}, entropy ${PM_ENTROPY}, developers ${PM_DEVS}, prior_changes ${PM_PRIOR}, author_commits ${PM_AUTHOR})"
 echo "  [guard] reverts_7d/30d:       ${REV7}/${REV30}  hotfixes_7d/30d: ${HOT7}/${HOT30}"
 echo "  [guard] reverts_in_push:      ${REVERTED_COUNT}  is_hotfix: ${IS_HOTFIX}"
+echo "  [guard] gate_policy:          $([ "$POLICY_PRESENT" = "true" ] && echo "${POLICY_FILE} (${POLICY_REF:0:40})" || echo "Standardregeln")"
+[ -n "$POLICY_NOTE" ] && echo "  [guard] gate_note:            ${POLICY_NOTE}"
+echo "  [guard] agents_detected:      $(jq -r 'if length == 0 then "keine" else join(", ") end' "$AGENTS_FILE")"
 
 # ── Payload bauen (jq, keine String-Interpolation) ───────────────────────
 new_tmp PAYLOAD_FILE
@@ -501,6 +589,11 @@ jq -n \
   --slurpfile reverted_shas           "$REVERTED_FILE" \
   --argjson is_hotfix                 "$IS_HOTFIX" \
   --arg     event_name                "$EVENT_NAME" \
+  --rawfile policy_yaml               "$POLICY_TMP" \
+  --argjson policy_present            "$POLICY_PRESENT" \
+  --arg     policy_path               "$POLICY_FILE" \
+  --argjson policy_unavailable        "$POLICY_UNAVAILABLE" \
+  --slurpfile agent_names             "$AGENTS_FILE" \
   '{
     repo: $repo,
     branch: $branch,
@@ -541,7 +634,11 @@ jq -n \
     hotfixes_30d: $hotfixes_30d,
     reverted_shas: $reverted_shas[0],
     is_hotfix: $is_hotfix,
-    event_name: $event_name
+    event_name: $event_name,
+    policy_yaml: (if $policy_present then $policy_yaml else null end),
+    policy_path: $policy_path,
+    policy_unavailable: $policy_unavailable,
+    agent_names: $agent_names[0]
   }' > "$PAYLOAD_FILE" || die "Payload konnte nicht erzeugt werden."
 
 # ── Fehlerbehandlung: fail-open vs. fail-closed ──────────────────────────
@@ -579,6 +676,36 @@ soft_fail() {
   print_body
   exit 1
 }
+
+# ── GitHub-API für Labels/Reviews vorbereiten ────────────────────────────
+GH_PR_READY="false"
+if [ -n "${GH_TOKEN_INPUT:-}" ] && [[ "${GITHUB_PR_NUMBER:-}" =~ ^[0-9]{1,9}$ ]] \
+   && [[ "${GITHUB_REPO:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+  if [ "${GITHUB_EVENT_NAME:-}" = "pull_request_target" ]; then
+    # pull_request_target checkt den Basis-Commit aus: bewertet würde nicht der PR-Code
+    echo "::warning title=Deployment Guard::pull_request_target bewertet nicht den Code des Pull Requests — kein Label, keine Freigabe-Prüfung. Bitte pull_request verwenden."
+    [ "$ENFORCE_REVIEWS" = "true" ] && die "enforce-reviews funktioniert nicht mit pull_request_target."
+  else
+    GH_API="${GITHUB_API_URL:-https://api.github.com}"
+    if [[ "$GH_API" =~ ^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._/-]*)?$ ]]; then
+      new_tmp GH_HDR
+      printf 'Authorization: Bearer %s\n' "$GH_TOKEN_INPUT" > "$GH_HDR"
+      ISSUE_URL="${GH_API%/}/repos/${GITHUB_REPO}/issues/${GITHUB_PR_NUMBER}/labels"
+      GH_PR_READY="true"
+      # Alte Entscheidung zuerst entfernen: Scheitert die Bewertung, bleibt kein veraltetes dg:auto-ok stehen
+      if [ "$LABEL_PR" = "true" ]; then
+        for old in dg%3Aauto-ok dg%3Areview dg%3Atwo-reviewers dg%3Ablocked; do
+          curl -sS -o /dev/null --max-time 15 -X DELETE -H @"$GH_HDR" \
+            -H "Accept: application/vnd.github+json" "${ISSUE_URL}/${old}" 2>/dev/null || true
+        done
+      fi
+    elif [ "$ENFORCE_REVIEWS" = "true" ]; then
+      die "GITHUB_API_URL ungültig — enforce-reviews nicht möglich."
+    fi
+  fi
+elif [ "$ENFORCE_REVIEWS" = "true" ] && [[ "${GITHUB_EVENT_NAME:-}" == pull_request* ]]; then
+  die "enforce-reviews: Pull-Request-Nummer oder Repository fehlt."
+fi
 
 # ── Senden (API Key per Header-Datei, nicht auf der Kommandozeile) ───────
 new_tmp HDR_FILE
@@ -637,6 +764,24 @@ set_output status "$STATUS"
 set_output verdict "$VERDICT"
 set_output explanation "$EXPLANATION"
 
+# Freigabe-Gate (ab Backend mit Gate; ältere Backends liefern kein .gate)
+GATE_DECISION=$(jq -r '.gate.decision // "" | tostring' "$RESP_FILE")
+case "$GATE_DECISION" in
+  auto_ok|review|two_reviewers|blocked|"") ;;
+  *) GATE_DECISION="" ;;
+esac
+GATE_REASONS=$(jq -r '[.gate.reasons[]? | "\(.level // "" | tostring): \(.detail // "" | tostring)"] | .[:20] | join("\n")' "$RESP_FILE" 2>/dev/null || true)
+GATE_POLICY_ERROR=$(jq -r '.gate.policy_error // "" | tostring' "$RESP_FILE" 2>/dev/null || true)
+set_output gate-decision "$GATE_DECISION"
+set_output gate-reasons "$GATE_REASONS"
+case "$GATE_DECISION" in
+  auto_ok) GATE_LABEL="dg:auto-ok"; GATE_TEXT="Automatisch freigegeben" ;;
+  review) GATE_LABEL="dg:review"; GATE_TEXT="Review durch eine Person nötig" ;;
+  two_reviewers) GATE_LABEL="dg:two-reviewers"; GATE_TEXT="Review durch zwei Personen nötig" ;;
+  blocked) GATE_LABEL="dg:blocked"; GATE_TEXT="Blockiert" ;;
+  *) GATE_LABEL=""; GATE_TEXT="" ;;
+esac
+
 # Auf GitHub zusätzlich Workflow-Commands für API-Text abschalten
 STOP_TOKEN=""
 if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
@@ -670,12 +815,129 @@ if [ -n "$EXPLANATION" ]; then
   echo ""
 fi
 
+if [ -n "$GATE_DECISION" ]; then
+  echo "🚦 Freigabe: ${GATE_TEXT} (${GATE_DECISION})"
+  printf '%s\n' "$GATE_REASONS" | sanitize | sed 's/^/   • /'
+  if [ -n "$GATE_POLICY_ERROR" ]; then
+    printf '   ⚠️  Policy nicht verwendet: %s\n' "$GATE_POLICY_ERROR" | sanitize
+  fi
+  echo ""
+fi
+
 if [ -n "$STOP_TOKEN" ]; then
   echo "::${STOP_TOKEN}::"
 fi
 
+# Zusammenfassung im Job (Gründe als Codeblock: Dateipfade können Markdown enthalten)
+if [ -n "$GATE_DECISION" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  {
+    echo "### 🛡️ Deployment Guard: ${GATE_TEXT}"
+    echo ""
+    echo "Score **${SCORE}/100** · Status **${STATUS}** · Entscheidung \`${GATE_DECISION}\`"
+    echo ""
+    echo '```text'
+    printf '%s\n' "$GATE_REASONS" | sanitize | tr -d '`'
+    [ -n "$GATE_POLICY_ERROR" ] && printf 'Policy nicht verwendet: %s\n' "$GATE_POLICY_ERROR" | sanitize | tr -d '`'
+    echo '```'
+  } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+fi
+
+# Label am Pull Request setzen (alte dg:*-Labels wurden schon vor der API-Anfrage entfernt)
+if [ -n "$GATE_LABEL" ] && [ "$GH_PR_READY" = "true" ] && [ "$LABEL_PR" = "true" ]; then
+  LABEL_CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 -X POST -H @"$GH_HDR" \
+    -H "Accept: application/vnd.github+json" -H "Content-Type: application/json" \
+    --data "{\"labels\":[\"${GATE_LABEL}\"]}" "$ISSUE_URL" 2>/dev/null || echo "000")
+  if [ "$LABEL_CODE" = "200" ]; then
+    echo "🏷️  Label ${GATE_LABEL} gesetzt."
+  else
+    echo "::warning title=Deployment Guard::Label konnte nicht gesetzt werden (HTTP ${LABEL_CODE:0:3}). Der Token braucht 'pull-requests: write'; bei Pull Requests aus Forks ist das nicht möglich."
+  fi
+fi
+
+# Freigaben durchsetzen (enforce-reviews): zählt den letzten Review-Stand je Person für
+# genau diesen Commit. Gezählt werden nur Personen mit Schreibrecht, nicht der PR-Autor,
+# keine Commit-Autoren des PRs und keine Bots. Fehlen Freigaben, schlägt der Check fehl.
+gh_get_pages() {  # $1 = URL ohne page-Parameter, $2 = Zieldatei (JSON-Array aller Seiten)
+  local url="$1" out="$2" page=1 code tmp
+  new_tmp tmp
+  echo '[]' > "$out"
+  while [ "$page" -le 10 ]; do
+    code=$(curl -sS -o "$tmp" -w '%{http_code}' --max-time 20 -H @"$GH_HDR" \
+      -H "Accept: application/vnd.github+json" "${url}&page=${page}" 2>/dev/null || echo "000")
+    [ "$code" = "200" ] && jq -e 'type == "array"' "$tmp" >/dev/null 2>&1 || return 1
+    jq -s '.[0] + .[1]' "$out" "$tmp" > "${tmp}.m" && mv "${tmp}.m" "$out"
+    [ "$(jq 'length' "$tmp")" -lt 100 ] && return 0
+    page=$((page + 1))
+  done
+  return 1  # mehr als 1000 Einträge: nicht sicher auswertbar
+}
+
+if [ "$ENFORCE_REVIEWS" = "true" ] && [[ "${GITHUB_EVENT_NAME:-}" == pull_request* ]]; then
+  if [ "$GH_PR_READY" != "true" ]; then
+    echo "❌ enforce-reviews: GitHub-API nicht nutzbar (Token, PR-Nummer oder API-URL fehlt)."
+    exit 1
+  fi
+  case "$GATE_DECISION" in
+    auto_ok) REQUIRED_APPROVALS=0 ;;
+    review) REQUIRED_APPROVALS=1 ;;
+    two_reviewers) REQUIRED_APPROVALS=2 ;;
+    blocked)
+      echo "❌ Freigabe-Regel: blockiert (enforce-reviews, unabhängig von fail-on-blocked)."
+      exit 1 ;;
+    *)
+      echo "❌ enforce-reviews: keine Freigabe-Entscheidung von der API erhalten (Backend zu alt?) — Check schlägt fehl."
+      exit 1 ;;
+  esac
+  if [ "$REQUIRED_APPROVALS" -gt 0 ]; then
+    if ! [[ "${GITHUB_PR_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
+      echo "❌ enforce-reviews: Head-Commit des Pull Requests unbekannt — Freigaben nicht prüfbar."
+      exit 1
+    fi
+    PR_API="${GH_API%/}/repos/${GITHUB_REPO}/pulls/${GITHUB_PR_NUMBER}"
+    new_tmp REVIEWS_FILE
+    new_tmp PR_COMMITS_FILE
+    if ! gh_get_pages "${PR_API}/reviews?per_page=100" "$REVIEWS_FILE" \
+       || ! gh_get_pages "${PR_API}/commits?per_page=100" "$PR_COMMITS_FILE"; then
+      echo "❌ enforce-reviews: Reviews oder Commits konnten nicht gelesen werden — Check schlägt sicherheitshalber fehl."
+      exit 1
+    fi
+    PR_AUTHOR_LC=$(printf '%s' "${GITHUB_PR_AUTHOR:-}" | tr '[:upper:]' '[:lower:]')
+    # Kandidaten: letzter Stand je Person (nach Review-ID), APPROVED auf dem aktuellen Commit
+    CANDIDATES=$(jq -r --arg sha "$GITHUB_PR_HEAD_SHA" --arg author "$PR_AUTHOR_LC" --slurpfile commits "$PR_COMMITS_FILE" '
+      ([ $commits[0][] | (.author.login // empty), (.committer.login // empty) ]
+        | map(ascii_downcase) | unique) as $coders
+      | [ .[] | select(.user != null and (.user.type // "") != "Bot")
+              | select((.state // "") != "COMMENTED" and (.state // "") != "PENDING") ]
+      | sort_by(.id) | group_by(.user.login | ascii_downcase) | map(last)
+      | map(select(.state == "APPROVED" and .commit_id == $sha))
+      | map(.user.login) | map(select((ascii_downcase) != $author and (ascii_downcase | IN($coders[]) | not)))
+      | .[] | select(test("^[A-Za-z0-9-]{1,39}$"))' "$REVIEWS_FILE")
+    APPROVALS=0
+    for login in $CANDIDATES; do
+      new_tmp PERM_FILE
+      PCODE=$(curl -sS -o "$PERM_FILE" -w '%{http_code}' --max-time 15 -H @"$GH_HDR" \
+        -H "Accept: application/vnd.github+json" \
+        "${GH_API%/}/repos/${GITHUB_REPO}/collaborators/${login}/permission" 2>/dev/null || echo "000")
+      if [ "$PCODE" = "200" ] && jq -e '.permission == "admin" or .permission == "write" or .permission == "maintain" or (.role_name // "" | IN("admin","maintain","write"))' "$PERM_FILE" >/dev/null 2>&1; then
+        APPROVALS=$((APPROVALS + 1))
+      fi
+    done
+    if [ "$APPROVALS" -lt "$REQUIRED_APPROVALS" ]; then
+      echo "❌ Freigabe-Regel verlangt ${REQUIRED_APPROVALS} Freigabe(n) für den aktuellen Commit von Personen mit Schreibrecht, vorhanden: ${APPROVALS}."
+      echo "   Nicht gezählt: PR-Autor, Commit-Autoren des PRs, Bots, Freigaben älterer Commits."
+      exit 1
+    fi
+    echo "✅ ${APPROVALS} von ${REQUIRED_APPROVALS} nötigen Freigabe(n) vorhanden."
+  fi
+fi
+
 if [ "$STATUS" = "BLOCKED" ] && [ "$FAIL_ON_BLOCKED" = "true" ]; then
   echo "❌ Deployment blockiert — Risk Score zu hoch (${SCORE}/100)."
+  exit 1
+fi
+
+if [ "$GATE_DECISION" = "blocked" ] && [ "$FAIL_ON_BLOCKED" = "true" ]; then
+  echo "❌ Deployment blockiert — Freigabe-Regel greift (siehe Gründe oben)."
   exit 1
 fi
 
@@ -688,5 +950,10 @@ if [ "$STATUS" = "WARN" ]; then
 fi
 
 if [ "$STATUS" = "PASS" ]; then
-  echo "✅ Deployment freigegeben (${SCORE}/100)."
+  case "$GATE_DECISION" in
+    review|two_reviewers)
+      echo "✅ Score unkritisch (${SCORE}/100) — laut Freigabe-Regel: ${GATE_TEXT}." ;;
+    *)
+      echo "✅ Deployment freigegeben (${SCORE}/100)." ;;
+  esac
 fi
