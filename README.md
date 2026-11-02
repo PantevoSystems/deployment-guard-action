@@ -2,7 +2,7 @@
 
 [![Deployment Guard](https://api.pantevosystems.com/badge/2Yg2FpGsCnQ60zKgsURzH5fk3myKtoX5.svg)](https://www.pantevosystems.com)
 
-Deterministic risk score before every deployment. Analyses your code changes automatically and blocks risky deployments. A formula you can follow — not a black box.
+Release gate for pull requests from people and AI agents (Copilot, Claude, Cursor and others). Rules in your repo decide what merges automatically, who has to review and what is blocked, with the reasons on the PR. Plus a deterministic risk score from 0 to 100. No language model decides, no source code leaves the pipeline.
 
 **By [PantevoSystems](https://www.pantevosystems.com)** · [Deutsch](README.de.md)
 
